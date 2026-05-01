@@ -1,0 +1,39 @@
+name: metric-optimizer
+project_dir: .
+model: opus
+
+tasks:
+  file: tasks.yaml
+  defaults:
+    budget:
+      max_iterations: 15
+      max_cost: 80.0
+    stages:
+      analyze: { max_turns: 50 }
+      develop: { max_turns: 100 }
+
+eval:
+  parser: json
+
+workflow:
+  setup: setup
+  loop:
+    - eval
+    - analyze
+    - develop
+
+stages:
+  setup:
+    toolset: all
+    max_turns: 100
+  analyze:
+    toolset: read_only
+  develop:
+    toolset: all
+    escalation: true
+    supervisor: true
+
+git:
+  enabled: true
+  snapshot_before: develop
+  commit_after: loop

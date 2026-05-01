@@ -1,0 +1,26 @@
+name: my-build
+project_dir: .
+model: opus
+
+tasks:
+  file: tasks.yaml
+
+eval:
+  command: "echo 'no eval configured'"
+  parser: exit_code
+
+workflow:
+  loop:
+    - eval
+    - develop
+
+stages:
+  develop:
+    toolset: all
+    max_turns: 100
+    escalation: true
+    supervisor: true
+
+budget:
+  max_iterations: 10
+  max_cost: 50.0

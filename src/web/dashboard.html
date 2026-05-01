@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orca</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --cyan: #58a6ff;
+  --bar-bg: #21262d;
+  --bar-fill: #58a6ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.topbar-brand { font-size: 14px; font-weight: 700; cursor: pointer; }
+.topbar-nav { display: flex; gap: 12px; }
+.topbar-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.topbar-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.topbar-btn.active { border-color: var(--cyan); color: var(--cyan); }
+
+.container { max-width: 960px; margin: 0 auto; padding: 20px; }
+.view { display: none; }
+.view.active { display: block; }
+
+/* Status badges */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.status-cloning .status-dot { background: var(--yellow); animation: pulse 2s infinite; }
+.status-cloning { color: var(--yellow); }
+.status-running .status-dot { background: var(--cyan); animation: pulse 2s infinite; }
+.status-running { color: var(--cyan); }
+.status-completed .status-dot { background: var(--green); }
+.status-completed { color: var(--green); }
+.status-failed .status-dot { background: var(--red); }
+.status-failed { color: var(--red); }
+.status-stopping .status-dot { background: var(--yellow); }
+.status-stopping { color: var(--yellow); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Build list */
+.build-list-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.build-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 14px 18px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.build-card:hover { border-color: var(--cyan); }
+.build-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.build-card-name { font-size: 14px; font-weight: 600; }
+.build-card-meta { font-size: 11px; color: var(--text-dim); display: flex; gap: 16px; }
+
+/* Create build form */
+.form-group { margin-bottom: 16px; }
+.form-label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.form-input, .form-select, .form-textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+.form-textarea {
+  min-height: 200px;
+  resize: vertical;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.form-row { display: flex; gap: 12px; }
+.form-row .form-group { flex: 1; }
+.form-radio-group { display: flex; gap: 16px; align-items: center; }
+.form-radio-group label { font-size: 12px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.form-radio-group input { accent-color: var(--cyan); }
+.btn {
+  background: var(--cyan);
+  color: var(--bg);
+  border: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover { opacity: 0.9; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-danger { background: var(--red); }
+.btn-outline {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.btn-outline:hover { border-color: var(--text); }
+
+/* Build detail */
+.detail-header {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.detail-header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.detail-name { font-size: 16px; font-weight: 700; }
+.detail-actions { display: flex; gap: 8px; }
+.detail-summary { display: flex; gap: 20px; font-size: 12px; color: var(--text-dim); flex-wrap: wrap; }
+.detail-summary .val { color: var(--text); font-weight: 600; }
+
+/* Task list in detail */
+.task-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.task-card.active { border-color: var(--cyan); }
+.task-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  gap: 10px;
+  font-size: 13px;
+}
+.task-icon { width: 16px; text-align: center; flex-shrink: 0; }
+.task-name { font-weight: 600; flex: 1; }
+.task-meta { font-size: 11px; color: var(--text-dim); display: flex; gap: 12px; }
+.icon-completed { color: var(--green); }
+.icon-failed { color: var(--red); }
+.icon-running { color: var(--yellow); }
+.icon-skipped, .icon-pending { color: var(--text-dim); opacity: 0.4; }
+
+/* Stage list */
+.stage-list { padding: 0 16px 10px 42px; }
+.stage-row { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 3px 0; color: var(--text-dim); }
+.stage-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.stage-dot.done { background: var(--green); }
+.stage-dot.active { background: var(--yellow); animation: pulse 1.5s infinite; }
+.stage-dot.pending { background: var(--text-dim); opacity: 0.3; }
+.stage-dot.failed { background: var(--red); }
+.stage-name { min-width: 80px; }
+.stage-name.active { color: var(--yellow); font-weight: 600; }
+
+/* Progress bars */
+.progress-section { padding: 4px 16px 10px 42px; }
+.progress-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; font-size: 11px; }
+.progress-label { width: 45px; color: var(--text-dim); }
+.progress-bar { flex: 1; height: 4px; background: var(--bar-bg); border-radius: 2px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--bar-fill); border-radius: 2px; transition: width 0.3s ease; }
+.progress-text { min-width: 80px; text-align: right; color: var(--text-dim); font-size: 10px; }
+
+/* Log viewer */
+.log-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  margin-top: 16px;
+  overflow: hidden;
+}
+.log-panel-header {
+  padding: 10px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.log-body {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 8px 0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.log-entry { padding: 2px 16px; color: var(--text-dim); white-space: pre-wrap; word-break: break-all; }
+.log-entry.stdout { color: var(--text); opacity: 0.8; }
+.log-entry.stderr { color: var(--red); opacity: 0.8; }
+.log-entry.status { color: var(--cyan); }
+.log-entry.state { color: var(--yellow); }
+
+/* Intervention banner */
+.intervention-banner {
+  border: 2px solid var(--red);
+  border-radius: 8px;
+  padding: 16px 20px;
+  background: #1c1215;
+  margin-bottom: 16px;
+}
+.intervention-title { font-size: 13px; font-weight: 700; color: var(--red); margin-bottom: 8px; }
+.intervention-detail { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-bottom: 12px; }
+.intervention-detail strong { color: var(--text); }
+.intervention-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.intervention-note {
+  flex: 1;
+  min-width: 200px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+}
+.intervention-note:focus { outline: none; border-color: var(--cyan); }
+
+/* Conn indicator */
+.conn { position: fixed; top: 8px; right: 8px; font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; z-index: 10; }
+.conn-dot { width: 6px; height: 6px; border-radius: 50%; }
+.conn-dot.ok { background: var(--green); }
+.conn-dot.err { background: var(--red); }
+.conn-dot.off { background: var(--text-dim); }
+
+/* Error toast */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: var(--surface);
+  border: 1px solid var(--red);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  z-index: 100;
+  display: none;
+}
+.toast.show { display: block; }
+
+/* Responsive */
+@media (max-width: 640px) {
+  .container { padding: 12px; }
+  .form-row { flex-direction: column; gap: 0; }
+  .detail-header-top { flex-direction: column; gap: 8px; align-items: flex-start; }
+  .detail-summary { flex-direction: column; gap: 6px; }
+  .intervention-actions { flex-direction: column; }
+  .intervention-note { min-width: unset; width: 100%; }
+  .log-body { max-height: 300px; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="topbar-brand" onclick="showView('list')">orca <span id="version-tag" style="font-size:11px;color:var(--text-dim);font-weight:400"></span></span>
+  <div class="topbar-nav">
+    <button class="topbar-btn" id="nav-list" onclick="showView('list')">Builds</button>
+    <button class="topbar-btn" id="nav-create" onclick="showView('create')">New Build</button>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Build List View -->
+  <div class="view active" id="view-list">
+    <div id="build-list"></div>
+  </div>
+
+  <!-- Create Build View -->
+  <div class="view" id="view-create">
+    <h2 style="font-size:16px;margin-bottom:16px;">Create Build</h2>
+    <form id="create-form" onsubmit="return submitBuild(event)">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Repository URL</label>
+          <input class="form-input" id="field-repo" type="text" placeholder="https://github.com/user/repo" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Branch</label>
+          <input class="form-input" id="field-branch" type="text" placeholder="main" value="main">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Build Name (optional)</label>
+        <input class="form-input" id="field-name" type="text" placeholder="Auto-generated if empty">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Spec Source</label>
+        <div class="form-radio-group">
+          <label><input type="radio" name="spec-source" value="repo" checked onchange="toggleSpecEditor()"> From repository</label>
+          <label><input type="radio" name="spec-source" value="inline" onchange="toggleSpecEditor()"> Write inline</label>
+        </div>
+      </div>
+      <div class="form-group" id="spec-editor-group" style="display:none">
+        <label class="form-label">
+          Spec Template
+          <select class="form-select" id="field-template" onchange="applyTemplate()" style="display:inline-block;width:auto;margin-left:8px;padding:4px 8px;">
+            <option value="">-- none --</option>
+            <option value="minimal">Minimal</option>
+            <option value="standard">Standard</option>
+            <option value="full">Full</option>
+          </select>
+        </label>
+        <textarea class="form-textarea" id="field-spec" placeholder="# project.orca.yaml"></textarea>
+      </div>
+      <button class="btn" type="submit" id="submit-btn">Start Build</button>
+    </form>
+  </div>
+
+  <!-- Build Detail View -->
+  <div class="view" id="view-detail">
+    <div id="detail-content"></div>
+  </div>
+</div>
+
+<div class="conn"><span class="conn-dot off" id="conn-dot"></span><span id="conn-text"></span></div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+var currentView = 'list';
+var currentBuildId = null;
+var eventSource = null;
+var buildDetail = null;
+var buildLogs = [];
+var intervention = null;
+var elapsedInterval = null;
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+var TEMPLATES = {
+  minimal: 'name: my-project\nproject_dir: .\n\ntasks:\n  - id: main\n    prompt: |\n      Implement the feature.\n',
+  standard: 'name: my-project\nproject_dir: .\n\nworkflow:\n  pre: [understand]\n  loop: [develop, eval]\n  post: [cleanup]\n\ntasks:\n  - id: main\n    prompt: |\n      Implement the feature.\n    budget:\n      max_iterations: 10\n      max_cost_usd: 5.00\n',
+  full: 'name: my-project\nproject_dir: .\n\nworkflow:\n  pre: [understand, analyze]\n  loop: [develop, eval, qa]\n  post: [cleanup]\n\ntasks:\n  - id: setup\n    prompt: |\n      Set up the project dependencies.\n    budget:\n      max_iterations: 3\n      max_cost_usd: 1.00\n\n  - id: main\n    prompt: |\n      Implement the main feature.\n    budget:\n      max_iterations: 15\n      max_cost_usd: 10.00\n\n  - id: tests\n    prompt: |\n      Write tests for the implementation.\n    budget:\n      max_iterations: 5\n      max_cost_usd: 3.00\n'
+};
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function fmtDuration(sec) {
+  if (sec < 0) sec = 0;
+  if (sec < 60) return Math.round(sec) + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + Math.round(sec % 60) + 's';
+  return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+}
+function fmtCost(n) { return '$' + (n || 0).toFixed(2); }
+function fmtTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  return d.toLocaleTimeString();
+}
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 4000);
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+function showView(name, buildId) {
+  currentView = name;
+  document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active'); });
+  document.getElementById('view-' + name).classList.add('active');
+  document.querySelectorAll('.topbar-btn').forEach(function(b) { b.classList.remove('active'); });
+  var navBtn = document.getElementById('nav-' + name);
+  if (navBtn) navBtn.classList.add('active');
+
+  // Disconnect previous SSE
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  if (elapsedInterval) {
+    clearInterval(elapsedInterval);
+    elapsedInterval = null;
+  }
+
+  if (name === 'list') {
+    currentBuildId = null;
+    fetchBuilds();
+    document.title = 'orca';
+  } else if (name === 'detail' && buildId) {
+    currentBuildId = buildId;
+    buildDetail = null;
+    buildLogs = [];
+    intervention = null;
+    fetchBuildDetail(buildId);
+    connectSSE(buildId);
+  } else if (name === 'create') {
+    document.title = 'orca \u2014 new build';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Build List
+// ---------------------------------------------------------------------------
+function fetchBuilds() {
+  fetch('/builds')
+    .then(function(r) { return r.json(); })
+    .then(function(builds) { renderBuildList(builds); })
+    .catch(function(e) { showToast('Failed to fetch builds: ' + e.message); });
+}
+
+function renderBuildList(builds) {
+  var el = document.getElementById('build-list');
+  if (!builds || builds.length === 0) {
+    el.innerHTML = '<div class="build-list-empty">No builds yet. Click "New Build" to start one.</div>';
+    return;
+  }
+  var html = '';
+  builds.forEach(function(b) {
+    var elapsed = b.startedAt ? fmtDuration((Date.now() - new Date(b.startedAt).getTime()) / 1000) : '';
+    html += '<div class="build-card" onclick="showView(\'detail\',\'' + esc(b.id) + '\')">';
+    html += '<div class="build-card-top">';
+    html += '<span class="build-card-name">' + esc(b.name || b.id) + '</span>';
+    html += '<span class="status-badge status-' + esc(b.status) + '"><span class="status-dot"></span>' + esc(b.status) + '</span>';
+    html += '</div>';
+    html += '<div class="build-card-meta">';
+    html += '<span>ID: ' + esc(b.id) + '</span>';
+    html += '<span>Started: ' + fmtTime(b.startedAt) + '</span>';
+    if (elapsed) html += '<span>Elapsed: ' + elapsed + '</span>';
+    if (b.exitCode !== null && b.exitCode !== undefined) html += '<span>Exit: ' + b.exitCode + '</span>';
+    html += '</div></div>';
+  });
+  el.innerHTML = html;
+}
+
+// Auto-refresh build list
+setInterval(function() {
+  if (currentView === 'list') fetchBuilds();
+}, 5000);
+
+// ---------------------------------------------------------------------------
+// Create Build
+// ---------------------------------------------------------------------------
+function toggleSpecEditor() {
+  var source = document.querySelector('input[name="spec-source"]:checked').value;
+  document.getElementById('spec-editor-group').style.display = source === 'inline' ? 'block' : 'none';
+}
+
+function applyTemplate() {
+  var tpl = document.getElementById('field-template').value;
+  if (tpl && TEMPLATES[tpl]) {
+    document.getElementById('field-spec').value = TEMPLATES[tpl];
+  }
+}
+
+function submitBuild(e) {
+  e.preventDefault();
+  var repo = document.getElementById('field-repo').value.trim();
+  var branch = document.getElementById('field-branch').value.trim() || 'main';
+  var name = document.getElementById('field-name').value.trim();
+  var specSource = document.querySelector('input[name="spec-source"]:checked').value;
+  var spec = specSource === 'inline' ? document.getElementById('field-spec').value : undefined;
+
+  if (!repo) { showToast('Repository URL is required'); return false; }
+
+  var body = { repo: repo, branch: branch };
+  if (name) body.name = name;
+  if (spec) body.spec = spec;
+
+  var btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+
+  fetch('/builds', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Failed'); });
+      return r.json();
+    })
+    .then(function(data) {
+      btn.disabled = false;
+      btn.textContent = 'Start Build';
+      showView('detail', data.id);
+    })
+    .catch(function(err) {
+      btn.disabled = false;
+      btn.textContent = 'Start Build';
+      showToast('Error: ' + err.message);
+    });
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Build Detail
+// ---------------------------------------------------------------------------
+function fetchBuildDetail(id) {
+  fetch('/builds/' + id)
+    .then(function(r) {
+      if (!r.ok) throw new Error('Not found');
+      return r.json();
+    })
+    .then(function(data) {
+      buildDetail = data;
+      renderDetail();
+    })
+    .catch(function(e) { showToast('Failed to load build: ' + e.message); });
+
+  // Also fetch existing logs
+  fetch('/builds/' + id + '/logs')
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(data) {
+      if (data) {
+        (data.stdout || []).forEach(function(t) {
+          buildLogs.push({ type: 'stdout', text: t });
+        });
+        (data.stderr || []).forEach(function(t) {
+          buildLogs.push({ type: 'stderr', text: t });
+        });
+        renderDetail();
+      }
+    })
+    .catch(function() {});
+}
+
+function connectSSE(id) {
+  var connDot = document.getElementById('conn-dot');
+  var connText = document.getElementById('conn-text');
+
+  eventSource = new EventSource('/builds/' + id + '/events');
+
+  eventSource.onopen = function() {
+    connDot.className = 'conn-dot ok';
+    connText.textContent = 'live';
+  };
+
+  eventSource.onerror = function() {
+    connDot.className = 'conn-dot err';
+    connText.textContent = 'reconnecting';
+  };
+
+  eventSource.addEventListener('status', function(e) {
+    var data = JSON.parse(e.data);
+    if (buildDetail) {
+      buildDetail.status = data.status;
+      if (data.exitCode !== undefined) buildDetail.exitCode = data.exitCode;
+    } else {
+      buildDetail = { id: id, status: data.status };
+    }
+    buildLogs.push({ type: 'status', text: 'Status: ' + data.status + (data.error ? ' (' + data.error + ')' : '') });
+    renderDetail();
+  });
+
+  eventSource.addEventListener('stdout', function(e) {
+    var data = JSON.parse(e.data);
+    buildLogs.push({ type: 'stdout', text: data.text });
+    renderDetail();
+  });
+
+  eventSource.addEventListener('stderr', function(e) {
+    var data = JSON.parse(e.data);
+    buildLogs.push({ type: 'stderr', text: data.text });
+    renderDetail();
+  });
+
+  eventSource.addEventListener('state', function(e) {
+    var data = JSON.parse(e.data);
+    if (buildDetail) {
+      buildDetail.lastState = data.state;
+    }
+    renderDetail();
+  });
+
+  eventSource.addEventListener('intervention', function(e) {
+    var data = JSON.parse(e.data);
+    intervention = data;
+    renderDetail();
+  });
+
+  // Start elapsed timer
+  elapsedInterval = setInterval(function() {
+    var el = document.getElementById('detail-elapsed');
+    if (el && buildDetail && buildDetail.startedAt) {
+      el.textContent = fmtDuration((Date.now() - new Date(buildDetail.startedAt).getTime()) / 1000);
+    }
+  }, 1000);
+}
+
+function stopBuild(id) {
+  if (!confirm('Stop this build?')) return;
+  fetch('/builds/' + id, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function() { showToast('Build stop requested'); })
+    .catch(function(e) { showToast('Error: ' + e.message); });
+}
+
+function sendIntervention(id, action) {
+  var note = document.getElementById('intervention-note');
+  var body = { action: action };
+  if (note && note.value.trim()) body.note = note.value.trim();
+
+  fetch('/builds/' + id + '/intervene', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Failed'); });
+      intervention = null;
+      renderDetail();
+    })
+    .catch(function(e) { showToast('Error: ' + e.message); });
+}
+
+function taskIcon(status) {
+  var icons = {
+    completed: ['icon-completed', '&#10003;'],
+    failed: ['icon-failed', '&#10007;'],
+    running: ['icon-running', '&#9673;'],
+    skipped: ['icon-skipped', '&#8856;']
+  };
+  var i = icons[status] || ['icon-pending', '&#9675;'];
+  return '<span class="task-icon ' + i[0] + '">' + i[1] + '</span>';
+}
+
+function renderDetail() {
+  if (!buildDetail) return;
+  var b = buildDetail;
+  var state = b.lastState || {};
+  var tasks = state.tasks || {};
+  var elapsed = b.startedAt ? fmtDuration((Date.now() - new Date(b.startedAt).getTime()) / 1000) : '0s';
+
+  document.title = 'orca \u2014 ' + (b.name || b.id) + ' [' + b.status + ']';
+
+  var html = '';
+
+  // Intervention banner
+  if (intervention) {
+    html += '<div class="intervention-banner">';
+    html += '<div class="intervention-title">Intervention Required</div>';
+    html += '<div class="intervention-detail">';
+    if (intervention.cause) html += '<strong>Cause:</strong> ' + esc(intervention.cause) + '<br>';
+    if (intervention.diagnosis) html += '<strong>Diagnosis:</strong> ' + esc(intervention.diagnosis) + '<br>';
+    if (intervention.suggestedFix) html += '<strong>Suggested fix:</strong> ' + esc(intervention.suggestedFix);
+    html += '</div>';
+    html += '<div class="intervention-actions">';
+    html += '<input class="intervention-note" id="intervention-note" type="text" placeholder="Optional note...">';
+    html += '<button class="btn" onclick="sendIntervention(\'' + esc(b.id) + '\',\'continue\')">Continue</button>';
+    html += '<button class="btn btn-outline" onclick="sendIntervention(\'' + esc(b.id) + '\',\'skip\')">Skip</button>';
+    html += '<button class="btn btn-danger" onclick="sendIntervention(\'' + esc(b.id) + '\',\'abort\')">Abort</button>';
+    html += '</div></div>';
+  }
+
+  // Header
+  html += '<div class="detail-header">';
+  html += '<div class="detail-header-top">';
+  html += '<span class="detail-name">' + esc(b.name || b.id) + '</span>';
+  html += '<div class="detail-actions">';
+  html += '<button class="topbar-btn" onclick="showView(\'list\')">&larr; Back</button>';
+  if (b.status === 'running' || b.status === 'cloning') {
+    html += '<button class="btn btn-danger" onclick="stopBuild(\'' + esc(b.id) + '\')">Stop</button>';
+  }
+  html += '</div></div>';
+  html += '<div class="detail-summary">';
+  html += '<span>Status <span class="val status-' + esc(b.status) + '">' + esc(b.status) + '</span></span>';
+  if (state.totalCostUsd !== undefined) html += '<span>Cost <span class="val">' + fmtCost(state.totalCostUsd) + '</span></span>';
+  html += '<span>Elapsed <span class="val" id="detail-elapsed">' + elapsed + '</span></span>';
+  if (b.exitCode !== null && b.exitCode !== undefined) html += '<span>Exit <span class="val">' + b.exitCode + '</span></span>';
+  if (b.repoUrl) html += '<span>Repo <span class="val">' + esc(b.repoUrl) + '</span></span>';
+
+  var completedCount = (state.tasksCompleted || []).length;
+  var failedCount = (state.tasksFailed || []).length;
+  var totalTasks = state._totalTasks || Object.keys(tasks).length || 0;
+  if (totalTasks > 0) {
+    html += '<span>Tasks <span class="val">' + completedCount + '/' + totalTasks + '</span></span>';
+    if (failedCount > 0) html += '<span>Failed <span class="val" style="color:var(--red)">' + failedCount + '</span></span>';
+  }
+  html += '</div></div>';
+
+  // Task list from state
+  var taskIds = state._pendingTasks || Object.keys(tasks);
+  if (taskIds.length > 0) {
+    taskIds.forEach(function(id) {
+      var t = tasks[id];
+      var taskStatus = t ? t.status : 'pending';
+      var isActive = state.currentTaskId === id;
+      html += '<div class="task-card' + (isActive ? ' active' : '') + '">';
+      html += '<div class="task-header">';
+      html += taskIcon(taskStatus);
+      html += '<span class="task-name">' + esc(id) + '</span>';
+      html += '<span class="task-meta">';
+      if (t && (taskStatus === 'running' || taskStatus === 'failed' || taskStatus === 'completed')) {
+        html += '<span>iter ' + (t.iteration || 0) + '/' + (t.maxIterations || '?') + '</span>';
+      }
+      if (t && t.costUsd > 0) html += '<span>' + fmtCost(t.costUsd) + '</span>';
+      if (t && t.currentStage) html += '<span>' + esc(t.currentStage) + '</span>';
+      if (t && t.stopReason) html += '<span style="color:var(--red)">' + esc(t.stopReason).substring(0, 60) + '</span>';
+      html += '</span></div>';
+
+      // Progress bars for active tasks
+      if (isActive && t && taskStatus === 'running') {
+        var iterPct = t.maxIterations > 0 ? (t.iteration / t.maxIterations * 100) : 0;
+        var costPct = t.maxCost > 0 ? (t.costUsd / t.maxCost * 100) : 0;
+        html += '<div class="progress-section">';
+        html += '<div class="progress-row"><span class="progress-label">Iters</span>';
+        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + iterPct + '%"></div></div>';
+        html += '<span class="progress-text">' + (t.iteration || 0) + ' / ' + (t.maxIterations || '?') + '</span></div>';
+        if (t.maxCost > 0) {
+          html += '<div class="progress-row"><span class="progress-label">Budget</span>';
+          html += '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(costPct, 100) + '%"></div></div>';
+          html += '<span class="progress-text">' + fmtCost(t.costUsd) + ' / ' + fmtCost(t.maxCost) + '</span></div>';
+        }
+        html += '</div>';
+      }
+
+      html += '</div>';
+    });
+
+    // Tasks in state but not in taskIds
+    Object.keys(tasks).forEach(function(id) {
+      if (taskIds.indexOf(id) === -1) {
+        var t = tasks[id];
+        html += '<div class="task-card"><div class="task-header">';
+        html += taskIcon(t.status);
+        html += '<span class="task-name">' + esc(id) + '</span>';
+        html += '<span class="task-meta">';
+        if (t.costUsd > 0) html += '<span>' + fmtCost(t.costUsd) + '</span>';
+        html += '</span></div></div>';
+      }
+    });
+  }
+
+  // Log viewer
+  html += '<div class="log-panel">';
+  html += '<div class="log-panel-header"><span>Output Log</span><span>' + buildLogs.length + ' entries</span></div>';
+  html += '<div class="log-body" id="detail-log-body">';
+  // Show last 200 log entries
+  var visibleLogs = buildLogs.slice(-200);
+  visibleLogs.forEach(function(entry) {
+    html += '<div class="log-entry ' + esc(entry.type) + '">' + esc(entry.text) + '</div>';
+  });
+  html += '</div></div>';
+
+  document.getElementById('detail-content').innerHTML = html;
+
+  // Auto-scroll log
+  var logBody = document.getElementById('detail-log-body');
+  if (logBody) logBody.scrollTop = logBody.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+showView('list');
+fetch('/health').then(r => r.json()).then(d => {
+  if (d.version) document.getElementById('version-tag').textContent = 'v' + d.version;
+}).catch(() => {});
+</script>
+</body>
+</html>

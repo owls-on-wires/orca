@@ -1,0 +1,476 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://onezero.computer/schemas/project.orca.yaml",
+  "title": "project.orca.yaml",
+  "description": "Declarative build specification for the orca orchestrator.",
+  "type": "object",
+  "required": ["name", "tasks", "workflow"],
+  "additionalProperties": false,
+  "properties": {
+
+    "name": {
+      "type": "string",
+      "description": "Build name. Used for display, .orca/ directory path, and commit messages."
+    },
+
+    "project_dir": {
+      "type": "string",
+      "default": ".",
+      "description": "Target project root, relative to this file."
+    },
+
+    "model": {
+      "type": "string",
+      "default": "opus",
+      "description": "Default Claude model for all stages."
+    },
+
+    "tasks": { "$ref": "#/$defs/tasks" },
+    "eval": { "$ref": "#/$defs/eval" },
+    "workflow": { "$ref": "#/$defs/workflow" },
+    "workflows": {
+      "type": "object",
+      "description": "Named workflow templates. Tasks can reference these by name via the 'workflow' field.",
+      "additionalProperties": { "$ref": "#/$defs/workflow" }
+    },
+    "stages": { "$ref": "#/$defs/stages" },
+    "git": { "$ref": "#/$defs/git" },
+    "scope": { "$ref": "#/$defs/scope" },
+    "budget": { "$ref": "#/$defs/budget" },
+    "supervisor": { "$ref": "#/$defs/supervisor" },
+    "notifications": { "$ref": "#/$defs/notifications" },
+
+    "nix": { "$ref": "#/$defs/nix" },
+
+    "prompts": {
+      "type": "object",
+      "description": "Prompt injection. 'context' is prepended to every stage. 'stages' provides per-stage text.",
+      "properties": {
+        "context": {
+          "type": "string",
+          "description": "Text prepended to every stage prompt. Use for project-wide context."
+        },
+        "stages": {
+          "type": "object",
+          "description": "Per-stage text blocks. Keys are stage names, values are appended to that stage's prompt.",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "orca": {
+      "type": "object",
+      "description": "Live-reloadable overrides. Re-read at the top of each iteration.",
+      "properties": {
+        "max_iterations": { "type": "integer", "minimum": 1 },
+        "max_cost": { "type": "number", "minimum": 0 },
+        "max_turns": { "type": "integer", "minimum": 1 },
+        "stage_timeout": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+
+  "$defs": {
+
+    "tasks": {
+      "type": "object",
+      "description": "Task definitions. Load from external file, define inline, or both.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to external tasks file (relative to project.orca.yaml)."
+        },
+        "defaults": { "$ref": "#/$defs/taskDefaults" },
+        "list": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/task" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "taskDefaults": {
+      "type": "object",
+      "description": "Default values applied to every task. Per-task values override.",
+      "properties": {
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "depends_on": { "type": "array", "items": { "type": "string" } },
+        "eval": { "$ref": "#/$defs/eval" },
+        "budget": { "$ref": "#/$defs/budget" },
+        "stages": { "$ref": "#/$defs/stageOverrides" },
+        "variables": {
+          "type": "object",
+          "description": "Default template variables. Task variables extend these (deep merge).",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "task": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "description": "Unique task identifier. Used in eval commands ({task_id}), file paths, depends_on."
+        },
+        "title": {
+          "type": "string",
+          "description": "Display name for TUI and logs."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Organizational labels for filtering (--tag, --skip-tag)."
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Task IDs that must pass before this task starts. Empty array = no dependencies."
+        },
+        "eval": { "$ref": "#/$defs/eval" },
+        "budget": { "$ref": "#/$defs/budget" },
+        "stages": { "$ref": "#/$defs/stageOverrides" },
+        "variables": {
+          "type": "object",
+          "description": "Freeform template variables injected into stage prompts. Orca never interprets these.",
+          "additionalProperties": true
+        },
+        "workflow": {
+          "type": "string",
+          "description": "Named workflow to use for this task. References a key in the top-level 'workflows' map."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "eval": {
+      "type": "object",
+      "description": "Evaluation configuration. Runs a command and parses output to determine pass/fail.",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to run. Supports {task_id} and other template variables."
+        },
+        "parser": {
+          "type": "string",
+          "enum": ["cargo_test", "pytest", "json", "exit_code"],
+          "default": "cargo_test",
+          "description": "How to parse the command output."
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 300,
+          "minimum": 1,
+          "description": "Command timeout in seconds."
+        },
+        "results_file": {
+          "type": "string",
+          "description": "Also write eval results to this path (relative to project_dir). Supports {task_id}."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "workflow": {
+      "type": "object",
+      "required": ["loop"],
+      "description": "Stage execution order. Setup runs once, pre/post run per task, loop iterates.",
+      "properties": {
+        "setup": {
+          "type": "string",
+          "description": "Stage to run once before all tasks."
+        },
+        "pre": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Stages to run once per task, before the iteration loop."
+        },
+        "loop": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "The iteration loop. First stage should be 'eval'. Repeats until eval passes or budget exhausted."
+        },
+        "post": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Stages to run after the loop passes."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "stages": {
+      "type": "object",
+      "description": "Stage definitions. Each key is a stage name referenced in the workflow.",
+      "additionalProperties": { "$ref": "#/$defs/stage" }
+    },
+
+    "stage": {
+      "type": "object",
+      "description": "Configuration for a single stage.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["agent", "command", "eval"],
+          "description": "Stage type. agent=Claude invocation, command=shell command, eval=run+parse. Inferred if omitted."
+        },
+        "gate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require status:'passed' in output. Restarts the loop on failure."
+        },
+        "builtin": {
+          "type": "string",
+          "description": "Use a built-in prompt/schema by this name regardless of the stage's own name."
+        },
+        "parser": {
+          "type": "string",
+          "enum": ["cargo_test", "pytest", "json", "exit_code"],
+          "description": "Eval parser (for eval type stages)."
+        },
+        "toolset": {
+          "type": "string",
+          "enum": ["read_only", "all", "code", "bash"],
+          "default": "all",
+          "description": "Tool preset. read_only=[Read,Glob,Grep], all=[Read,Write,Edit,Bash,Glob,Grep], code=[Read,Write,Edit,Glob,Grep], bash=[Read,Bash,Glob,Grep]."
+        },
+        "max_turns": {
+          "type": "integer",
+          "default": 40,
+          "minimum": 1,
+          "description": "Maximum agent turns for this stage."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Path to prompt template file (relative to project.orca.yaml). If omitted, auto-loads stages/{stage_name}.prompt.txt."
+        },
+        "schema": {
+          "type": "string",
+          "description": "Path to JSON schema for structured output. If omitted, auto-loads stages/{stage_name}.schema.json."
+        },
+        "model": {
+          "type": "string",
+          "description": "Override model for this stage."
+        },
+        "scope": { "$ref": "#/$defs/scope" },
+        "escalation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Check stage output for escalation object."
+        },
+        "supervisor": {
+          "type": "boolean",
+          "default": false,
+          "description": "Invoke supervisor on escalation or stuck detection."
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 900,
+          "minimum": 1,
+          "description": "Wall-clock timeout in seconds for this stage."
+        },
+        "condition": {
+          "type": "string",
+          "default": "always",
+          "description": "When to run this stage. 'always', 'has:<variable>', 'file_missing:<path>'."
+        },
+        "command": {
+          "type": "string",
+          "description": "Shell command to run. Makes this a command stage (no Claude invocation)."
+        },
+        "wait_for": {
+          "type": "string",
+          "description": "Health check command, polled every 5s until exit 0. Used with command stages."
+        },
+        "wait_timeout": {
+          "type": "integer",
+          "default": 120,
+          "minimum": 1,
+          "description": "Max seconds to wait for wait_for health check."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "stageOverrides": {
+      "type": "object",
+      "description": "Per-task stage overrides. Keys are stage names, values override the stage definition.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "max_turns": { "type": "integer", "minimum": 1 },
+          "toolset": { "type": "string", "enum": ["read_only", "all", "code", "bash"] },
+          "model": { "type": "string" },
+          "timeout": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+
+    "git": {
+      "type": "object",
+      "description": "Git integration for snapshot/revert/commit.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "snapshot_before": {
+          "type": "string",
+          "description": "Stage name to auto-snapshot before."
+        },
+        "commit_after": {
+          "type": "string",
+          "enum": ["loop", "phase"],
+          "description": "When to auto-commit. 'loop' = when iteration loop passes."
+        },
+        "commit_message": {
+          "type": "string",
+          "default": "{name}: {task_id} complete",
+          "description": "Commit message template. Supports {name}, {task_id}, {task_title}."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "scope": {
+      "type": "object",
+      "description": "File access restrictions. Empty arrays or omitted = no restriction.",
+      "properties": {
+        "writable": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Glob patterns for files the agent can Write/Edit."
+        },
+        "readable": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Glob patterns for files the agent can Read/Glob/Grep."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "budget": {
+      "type": "object",
+      "description": "Iteration and cost limits.",
+      "properties": {
+        "max_iterations": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "description": "Maximum iterations per task."
+        },
+        "max_cost": {
+          "type": "number",
+          "default": 50.0,
+          "minimum": 0,
+          "description": "Maximum cost in USD per task."
+        },
+        "stage_timeout": {
+          "type": "integer",
+          "default": 900,
+          "minimum": 1,
+          "description": "Default wall-clock timeout per stage invocation (seconds)."
+        },
+        "stuck_window": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 2,
+          "description": "Number of identical consecutive outputs before stuck detection triggers."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "supervisor": {
+      "type": "object",
+      "description": "Supervisor agent configuration for handling escalations.",
+      "properties": {
+        "model": { "type": "string" },
+        "toolset": {
+          "type": "string",
+          "enum": ["read_only", "all", "code", "bash"],
+          "default": "all"
+        },
+        "max_turns": { "type": "integer", "default": 40, "minimum": 1 },
+        "prompt": {
+          "type": "string",
+          "description": "Path to custom supervisor prompt template."
+        },
+        "stuck_window": {
+          "type": "integer",
+          "description": "Override budget.stuck_window for supervisor-specific detection."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "notifications": {
+      "type": "object",
+      "description": "Push notification configuration.",
+      "properties": {
+        "on_build_start": { "type": "boolean", "default": false },
+        "on_task_start": { "type": "boolean", "default": false },
+        "on_escalation": { "type": "boolean", "default": false },
+        "on_task_complete": { "type": "boolean", "default": false },
+        "on_build_complete": { "type": "boolean", "default": false },
+        "on_budget_warning": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Notify when this fraction of budget is consumed (e.g., 0.8 = 80%)."
+        },
+        "channels": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/notificationChannel" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "nix": {
+      "type": "object",
+      "description": "Nix environment configuration for builds.",
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set false to disable nix even if flake.nix exists."
+        },
+        "flake": {
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "string" }
+          ],
+          "description": "true = use repo root flake.nix, string = path to flake directory."
+        },
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Nixpkgs to use with nix shell (e.g. [nodejs, bun])."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "notificationChannel": {
+      "type": "object",
+      "required": ["type", "run"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["command"]
+        },
+        "run": {
+          "type": "string",
+          "description": "Shell command (for type: command). Supports {message}."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

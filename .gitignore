@@ -1,0 +1,9 @@
+node_modules/
+dist/
+bin/orca*
+!bin/.gitkeep
+*.tsbuildinfo
+.orca/
+.playwright-mcp/
+/data/
+/tmp/

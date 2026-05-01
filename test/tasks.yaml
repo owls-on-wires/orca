@@ -1,0 +1,9 @@
+- id: test-task
+  title: "Test notification task"
+  tags: [test]
+  depends_on: []
+  budget:
+    max_iterations: 1
+    max_cost: 0.50
+  variables:
+    description: "This is a test task. Just say hello and exit."

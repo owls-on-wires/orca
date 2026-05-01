@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed"]
+    },
+    "full_suite_passed": {
+      "type": "boolean",
+      "description": "Whether the full test suite passed."
+    },
+    "new_regressions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Test names that regressed (passed in baseline, fail now)."
+    },
+    "summary": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": ["status"]
+}

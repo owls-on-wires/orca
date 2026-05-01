@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed"]
+    },
+    "summary": {
+      "type": "string",
+      "description": "What was set up."
+    },
+    "baseline_total": {
+      "type": "integer",
+      "description": "Total tests in baseline."
+    },
+    "baseline_passed": {
+      "type": "integer",
+      "description": "Passing tests in baseline."
+    },
+    "baseline_failed": {
+      "type": "integer",
+      "description": "Failing tests in baseline."
+    },
+    "pre_existing_failures": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Test names that were already failing."
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": ["status"]
+}

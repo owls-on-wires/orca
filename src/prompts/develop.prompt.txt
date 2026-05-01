@@ -1,0 +1,51 @@
+Implement the **{task_title}** feature to fully working status.
+
+This is iteration {orca.iteration}.
+
+## Task Description
+
+{description}
+
+## Prior Feedback
+
+**QA results (most important):** If `{orca.task_dir}/qa.json` exists, read it FIRST. QA tests the feature in the running application. If QA previously failed, its issues are your TOP PRIORITY — the feature does not work end-to-end and you must fix what QA reported.
+
+**Test results:** Read `{orca.task_dir}/eval_output.txt` for test output. The parsed results are at `{orca.task_dir}/eval_result.json`.
+
+**Codebase research:** If `{orca.task_dir}/understand.json` exists, read it for architecture notes, key files, and implementation approach.
+
+If `{orca.task_dir}/analyze.json` exists, read it for prior analysis.
+
+## Implementation Focus
+
+{develop_focus}
+
+## What "done" means
+
+The feature must work END TO END — not just pass unit tests. If the task describes a UI feature, the rendering code must exist. If the task describes an API, the HTTP calls must work. If the task describes a keybind, pressing the key must produce the described behavior. Passing tests is necessary but not sufficient.
+
+Do not return status "completed" unless you have implemented ALL components described in the task description, including any rendering, wiring, configuration, and integration code.
+
+## Rules
+
+- Read the current source code before making changes.
+- Make minimal, focused changes. Do not refactor unrelated code.
+- All implementation code MUST live in the source tree (source modules), NOT in test files.
+- Do NOT hardcode values or expected outputs to make specific tests pass.
+- Do NOT make tests self-contained by adding stubs to them.
+
+## Test Modifications
+
+You must NOT modify test files to make them easier to pass.
+
+If a test is genuinely wrong, return an escalation with cause **test_bug** instead of modifying it.
+
+## If You Cannot Proceed
+
+Return an escalation instead of making no changes. Valid causes:
+
+- **test_bug** — A test assertion is wrong.
+- **environment_problem** — Build tools, dependencies, or services are broken.
+- **bad_requirements** — The requirements are contradictory or impossible as stated.
+
+Include a detailed diagnosis so the supervisor can investigate.

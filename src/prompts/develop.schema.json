@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed"],
+      "description": "Whether changes were made successfully."
+    },
+    "summary": {
+      "type": "string",
+      "description": "What was changed and why."
+    },
+    "error": {
+      "type": "string",
+      "description": "Error details if status is failed."
+    },
+    "escalation": {
+      "type": "object",
+      "description": "Set this if you cannot proceed due to an external issue.",
+      "properties": {
+        "cause": {
+          "type": "string",
+          "enum": ["test_bug", "environment_problem", "bad_requirements"]
+        },
+        "diagnosis": {
+          "type": "string",
+          "description": "Detailed explanation of what's wrong."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "File paths, error messages, or other evidence."
+        },
+        "suggested_fix": {
+          "type": "string",
+          "description": "What you think should be done to resolve this."
+        }
+      },
+      "required": ["cause", "diagnosis"]
+    }
+  },
+  "required": ["status"]
+}

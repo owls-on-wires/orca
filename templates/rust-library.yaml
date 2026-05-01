@@ -1,0 +1,55 @@
+name: rust-library
+project_dir: .
+model: opus
+
+tasks:
+  file: tasks.yaml
+  defaults:
+    budget:
+      max_iterations: 10
+      max_cost: 50.0
+    stages:
+      write_tests: { max_turns: 80 }
+      analyze: { max_turns: 40 }
+      develop: { max_turns: 100 }
+
+eval:
+  command: "cargo test --test {task_id} 2>&1"
+  parser: cargo_test
+
+workflow:
+  setup: scaffold
+  pre:
+    - write_tests
+  loop:
+    - eval
+    - analyze
+    - develop
+  post:
+    - regression
+
+stages:
+  scaffold:
+    toolset: all
+    max_turns: 150
+  write_tests:
+    toolset: code
+    condition: "has: tests"
+  analyze:
+    toolset: read_only
+  develop:
+    toolset: all
+    escalation: true
+    supervisor: true
+  regression:
+    toolset: all
+    max_turns: 40
+
+git:
+  enabled: true
+  snapshot_before: develop
+  commit_after: loop
+
+scope:
+  writable: ["src/**"]
+  readable: ["src/**", "tests/**"]

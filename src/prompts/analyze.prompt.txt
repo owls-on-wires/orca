@@ -1,0 +1,28 @@
+Analyze the test failures for the **{task_title}** task.
+
+This is iteration {orca.iteration}.
+
+## Evaluation Results
+
+Read the test output at `{orca.task_dir}/eval_output.txt` to see which tests pass and fail, and any compile errors. The parsed results are at `{orca.task_dir}/eval_result.json`.
+
+## Prior Changes
+
+If this is iteration 2+, read `{orca.task_dir}/develop.json` to see what the develop stage reported about the changes it made. Compare against the new test results to understand what worked and what didn't.
+
+## Analysis
+
+For each failing test (or compile error):
+1. Read the test code to understand what it expects.
+2. Read the current implementation to understand what it does.
+3. Determine the root cause — why it fails.
+4. Recommend a specific code change with file paths and line numbers.
+
+## Rules
+
+- Focus on root causes. If multiple tests fail from the same underlying bug, identify the shared root cause rather than treating each failure independently.
+- If there are compile errors, diagnose those first — they block all tests.
+- Be specific: name exact functions, line numbers, and the expected vs actual behavior.
+- If the same failure appeared in a prior iteration and the prior fix didn't work, say so and recommend a different approach.
+- **Stub detection**: Even if all tests pass, check whether the test file contains inline type definitions, struct stubs, trait implementations, or mock types that should live in the source tree. If so, report this as a failure — the task is NOT complete until the real implementation exists in source modules and tests import from them. Recommend that develop move these stubs to the proper source modules.
+- Do NOT modify any source files. This is a read-only analysis stage.

@@ -1,0 +1,35 @@
+name: my-build
+project_dir: .
+model: opus
+
+tasks:
+  file: tasks.yaml
+
+eval:
+  command: "echo 'no eval configured'"
+  parser: exit_code
+
+workflow:
+  loop:
+    - eval
+    - develop
+
+stages:
+  develop:
+    toolset: all
+    max_turns: 100
+    escalation: true
+    supervisor: true
+
+notifications:
+  on_build_start: true
+  on_build_complete: true
+  on_task_start: true
+  on_task_complete: true
+  channels:
+    - type: command
+      run: "curl -s -d '{message}' https://ntfy.sh/one-zero-orca-test"
+
+budget:
+  max_iterations: 10
+  max_cost: 50.0

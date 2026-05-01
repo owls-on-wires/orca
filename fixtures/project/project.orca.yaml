@@ -1,0 +1,30 @@
+name: qa-fixture
+project_dir: .
+model: sonnet
+
+tasks:
+  file: tasks.yaml
+
+eval:
+  command: "bun test ./src/{task_id}.check.ts 2>&1"
+  parser: exit_code
+  timeout: 30
+
+workflow:
+  loop:
+    - eval
+    - mock_develop
+
+stages:
+  mock_develop:
+    command: "cp fixes/{task_id}.ts src/{task_id}.ts"
+
+git:
+  enabled: true
+  snapshot_before: mock_develop
+  commit_after: loop
+  commit_message: "qa-fixture: {task_id} complete"
+
+budget:
+  max_iterations: 3
+  max_cost: 5.0

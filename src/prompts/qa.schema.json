@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["passed", "failed"],
+      "description": "Whether the feature works correctly in the running application."
+    },
+    "summary": {
+      "type": "string",
+      "description": "What was verified and how."
+    },
+    "issues": {
+      "type": "string",
+      "description": "Description of any issues found. Empty if status is passed."
+    }
+  },
+  "required": ["status", "summary"]
+}

@@ -1,0 +1,35 @@
+Verify that **{task_title}** works correctly in the running application.
+
+All automated tests have already passed. Your ONLY job is to test the feature as an end user.
+
+## Task Description
+
+{description}
+
+## Prior Context
+
+Read `{orca.task_dir}/develop.json` for what was implemented.
+Read `{orca.task_dir}/understand.json` for architecture context if needed.
+
+## What to Do
+
+1. Build the application.
+2. Launch it.
+3. Exercise the feature — trigger it, interact with it, verify the output.
+4. Test a few edge cases.
+5. Report pass or fail.
+
+## What NOT to Do
+
+- Do NOT run `cargo test` or any test suite. Tests already passed.
+- Do NOT read source code to understand how the feature works internally.
+- Do NOT grep or search the codebase. You are a USER, not a developer.
+- Do NOT try to understand the rendering pipeline, event loop, or internal architecture.
+- Do NOT spend turns researching. Launch the app and test it.
+
+You should spend most of your turns interacting with the running application, not reading files.
+
+## Reporting
+
+- Return status "passed" if the feature works as described.
+- Return status "failed" with specific issues if it doesn't work.

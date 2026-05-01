@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orca monitor</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --cyan: #58a6ff;
+    --bar-bg: #21262d;
+    --bar-fill: #58a6ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .layout { display: flex; height: 100vh; }
+  .main { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .log-panel {
+    width: 420px;
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .log-header {
+    padding: 12px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .log-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .log-entry { padding: 2px 16px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log-entry.tool { color: var(--cyan); }
+  .log-entry.text { color: var(--text); opacity: 0.7; }
+  .log-entry.start { color: var(--green); }
+  .log-entry.end { color: var(--yellow); }
+  .log-entry .ts { color: var(--text-dim); opacity: 0.5; margin-right: 8px; }
+
+  /* Header */
+  .header {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    background: var(--surface);
+    margin-bottom: 16px;
+  }
+  .header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .build-name { font-size: 16px; font-weight: 700; }
+  .status-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .status-running .status-dot { background: var(--cyan); animation: pulse 2s infinite; }
+  .status-running { color: var(--cyan); }
+  .status-completed .status-dot { background: var(--green); }
+  .status-completed { color: var(--green); }
+  .status-failed .status-dot, .status-crashed .status-dot { background: var(--red); }
+  .status-failed, .status-crashed { color: var(--red); }
+  .status-paused .status-dot { background: var(--yellow); }
+  .status-paused { color: var(--yellow); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .summary { display: flex; gap: 20px; font-size: 12px; color: var(--text-dim); flex-wrap: wrap; }
+  .summary .val { color: var(--text); font-weight: 600; }
+
+  /* Task tree */
+  .task-tree { margin-bottom: 16px; }
+  .task-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .task-card.active { border-color: var(--cyan); border-width: 1px; }
+  .task-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    gap: 10px;
+    font-size: 13px;
+  }
+  .task-icon { width: 16px; text-align: center; flex-shrink: 0; }
+  .task-name { font-weight: 600; flex: 1; }
+  .task-meta { font-size: 11px; color: var(--text-dim); display: flex; gap: 12px; }
+  .icon-completed { color: var(--green); }
+  .icon-failed { color: var(--red); }
+  .icon-running { color: var(--yellow); }
+  .icon-skipped, .icon-pending { color: var(--text-dim); opacity: 0.4; }
+
+  /* Workflow stages inside a task */
+  .stage-list { padding: 0 16px 10px 42px; }
+  .stage-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    padding: 3px 0;
+    color: var(--text-dim);
+  }
+  .stage-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .stage-dot.done { background: var(--green); }
+  .stage-dot.active { background: var(--yellow); animation: pulse 1.5s infinite; }
+  .stage-dot.pending { background: var(--text-dim); opacity: 0.3; }
+  .stage-dot.failed { background: var(--red); }
+  .stage-name { min-width: 80px; }
+  .stage-name.active { color: var(--yellow); font-weight: 600; }
+  .stage-time { color: var(--text-dim); opacity: 0.6; }
+
+  /* Progress bars */
+  .progress-section { padding: 4px 16px 10px 42px; }
+  .progress-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; font-size: 11px; }
+  .progress-label { width: 45px; color: var(--text-dim); }
+  .progress-bar { flex: 1; height: 4px; background: var(--bar-bg); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--bar-fill); border-radius: 2px; transition: width 0.3s ease; }
+  .progress-text { min-width: 80px; text-align: right; color: var(--text-dim); font-size: 10px; }
+
+  /* Intervention */
+  .intervention {
+    border: 2px solid var(--red);
+    border-radius: 8px;
+    padding: 14px 16px;
+    background: #1c1215;
+    margin-bottom: 16px;
+  }
+  .intervention-title { font-size: 13px; font-weight: 700; color: var(--red); margin-bottom: 6px; }
+  .intervention-detail { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+
+  .waiting { text-align: center; padding: 48px 24px; color: var(--text-dim); }
+  .conn { position: fixed; top: 8px; right: 8px; font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; z-index: 10; }
+  .conn-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .conn-dot.ok { background: var(--green); }
+  .conn-dot.err { background: var(--red); }
+</style>
+</head>
+<body>
+<div class="conn"><span class="conn-dot" id="conn-dot"></span><span id="conn-text">connecting</span></div>
+<div class="layout">
+<div class="main" id="app">
+  <div class="waiting">orca monitor — waiting for build state...</div>
+</div>
+<div class="log-panel">
+  <div class="log-header">Activity Log</div>
+  <div class="log-body" id="log-body"></div>
+</div>
+</div>
+
+<script>
+const app = document.getElementById('app');
+const logBody = document.getElementById('log-body');
+const connDot = document.getElementById('conn-dot');
+const connText = document.getElementById('conn-text');
+let state = null;
+
+function setConn(ok) {
+  connDot.className = 'conn-dot ' + (ok ? 'ok' : 'err');
+  connText.textContent = ok ? 'live' : 'reconnecting';
+}
+
+function fmtDuration(sec) {
+  if (sec < 0) sec = 0;
+  if (sec < 60) return Math.round(sec) + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + Math.round(sec % 60) + 's';
+  return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+}
+function fmtCost(n) { return '$' + (n || 0).toFixed(2); }
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function taskIcon(status) {
+  var icons = { completed: ['icon-completed','&#10003;'], failed: ['icon-failed','&#10007;'], running: ['icon-running','&#9673;'], skipped: ['icon-skipped','&#8856;'] };
+  var i = icons[status] || ['icon-pending','&#9675;'];
+  return '<span class="task-icon ' + i[0] + '">' + i[1] + '</span>';
+}
+
+function getWorkflowStages(wf) {
+  var stages = [];
+  if (wf) {
+    (wf.pre || []).forEach(function(s) { stages.push({ name: s, phase: 'pre' }); });
+    (wf.loop || []).forEach(function(s) { stages.push({ name: s, phase: 'loop' }); });
+    (wf.post || []).forEach(function(s) { stages.push({ name: s, phase: 'post' }); });
+  }
+  return stages;
+}
+
+function getStageStatus(taskState, stageName, currentStage, taskStatus) {
+  if (!taskState) return 'pending';
+  if (currentStage === stageName && taskStatus === 'running') return 'active';
+  if (taskStatus === 'completed') return 'done';
+  if (taskStatus === 'failed' && currentStage === null) return 'done'; // past stages
+  // Check if we've passed this stage based on currentStage position
+  return 'pending';
+}
+
+function render() {
+  if (!state) return;
+  var s = state;
+  var status = s.status || 'unknown';
+  var completed = (s.tasksCompleted || []).length;
+  var failed = (s.tasksFailed || []).length;
+  var tasks = s.tasks || {};
+  var total = s._totalTasks || 0;
+  var elapsed = s.startedAt ? (Date.now() - new Date(s.startedAt).getTime()) / 1000 : 0;
+  var wfStages = getWorkflowStages(s._workflow);
+
+  var html = '';
+
+  // Header
+  html += '<div class="header"><div class="header-top">';
+  html += '<span class="build-name">' + esc(s.name || 'orca') + '</span>';
+  html += '<span class="status-badge status-' + status + '"><span class="status-dot"></span>' + status + '</span>';
+  html += '</div><div class="summary">';
+  html += '<span>Tasks <span class="val">' + completed + '/' + total + '</span></span>';
+  if (failed > 0) html += '<span>Failed <span class="val" style="color:var(--red)">' + failed + '</span></span>';
+  html += '<span>Cost <span class="val">' + fmtCost(s.totalCostUsd) + '</span></span>';
+  html += '<span>Elapsed <span class="val" id="elapsed">' + fmtDuration(elapsed) + '</span></span>';
+  html += '</div></div>';
+
+  // Intervention
+  if (s._intervention) {
+    var iv = s._intervention;
+    html += '<div class="intervention"><div class="intervention-title">!! Intervention Needed</div>';
+    html += '<div class="intervention-detail"><strong>' + esc(iv.taskId || '') + '</strong> &mdash; ' + esc(iv.cause || '') + '<br>' + esc(iv.diagnosis || '').substring(0, 300) + '</div></div>';
+  }
+
+  // Task tree
+  html += '<div class="task-tree">';
+  var pendingIds = s._pendingTasks || [];
+  var knownIds = new Set(Object.keys(tasks));
+
+  // Render all tasks in order
+  pendingIds.forEach(function(id) {
+    var t = tasks[id];
+    var taskStatus = t ? t.status : 'pending';
+    var isActive = s.currentTaskId === id;
+    html += '<div class="task-card' + (isActive ? ' active' : '') + '">';
+
+    // Task header
+    html += '<div class="task-header">';
+    html += taskIcon(taskStatus);
+    html += '<span class="task-name">' + esc(id) + '</span>';
+    html += '<span class="task-meta">';
+    if (t && (taskStatus === 'running' || taskStatus === 'failed' || taskStatus === 'completed')) {
+      html += '<span>iter ' + (t.iteration || 0) + '/' + (t.maxIterations || '?') + '</span>';
+    }
+    if (t && t.costUsd > 0) html += '<span>' + fmtCost(t.costUsd) + '</span>';
+    if (t && t.stopReason) html += '<span style="color:var(--red)">' + esc(t.stopReason).substring(0, 60) + '</span>';
+    html += '</span></div>';
+
+    // Workflow stages (show for active or completed tasks)
+    if (isActive || taskStatus === 'completed' || taskStatus === 'failed') {
+      html += '<div class="stage-list">';
+      wfStages.forEach(function(ws) {
+        var ss = getStageStatus(t, ws.name, t ? t.currentStage : null, taskStatus);
+        // For completed tasks, all stages are done
+        if (taskStatus === 'completed') ss = 'done';
+        var dotClass = ss;
+        var nameClass = ss === 'active' ? ' active' : '';
+
+        html += '<div class="stage-row">';
+        html += '<span class="stage-dot ' + dotClass + '"></span>';
+        html += '<span class="stage-name' + nameClass + '">' + esc(ws.name) + '</span>';
+
+        if (ss === 'active' && t && t.stageStartedAt) {
+          var stageElapsed = (Date.now() - new Date(t.stageStartedAt).getTime()) / 1000;
+          html += '<span class="stage-time">' + fmtDuration(stageElapsed);
+          if (t.stageMaxTurns) html += ' &middot; ' + (t.stageTurns || '?') + '/' + t.stageMaxTurns + 't';
+          html += '</span>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+
+      // Progress bars for running tasks
+      if (isActive && t && taskStatus === 'running') {
+        var iterPct = t.maxIterations > 0 ? (t.iteration / t.maxIterations * 100) : 0;
+        var costPct = t.maxCost > 0 ? (t.costUsd / t.maxCost * 100) : 0;
+        html += '<div class="progress-section">';
+        html += '<div class="progress-row"><span class="progress-label">Iters</span>';
+        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + iterPct + '%"></div></div>';
+        html += '<span class="progress-text">' + t.iteration + ' / ' + t.maxIterations + '</span></div>';
+        html += '<div class="progress-row"><span class="progress-label">Budget</span>';
+        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(costPct, 100) + '%"></div></div>';
+        html += '<span class="progress-text">' + fmtCost(t.costUsd) + ' / ' + fmtCost(t.maxCost) + '</span></div>';
+        html += '</div>';
+      }
+    }
+
+    html += '</div>';
+  });
+
+  // Tasks in state but not in pendingIds (e.g., setup)
+  Object.keys(tasks).forEach(function(id) {
+    if (!pendingIds.includes(id)) {
+      var t = tasks[id];
+      html += '<div class="task-card"><div class="task-header">';
+      html += taskIcon(t.status);
+      html += '<span class="task-name">' + esc(id) + '</span>';
+      html += '<span class="task-meta">';
+      if (t.costUsd > 0) html += '<span>' + fmtCost(t.costUsd) + '</span>';
+      html += '</span></div></div>';
+    }
+  });
+
+  html += '</div>';
+  app.innerHTML = html;
+  document.title = 'orca \u2014 ' + (s.name || '') + ' [' + status + ']';
+
+  // Render log
+  renderLog(s._recentLog || []);
+}
+
+function renderLog(entries) {
+  var html = '';
+  entries.forEach(function(e) {
+    if (!e) return;
+    var ts = e.timestamp ? e.timestamp.split('T')[1]?.substring(0, 8) || '' : '';
+    var cls = 'log-entry';
+    var text = '';
+
+    if (e.event_type === 'invoke_start') {
+      cls += ' start';
+      text = '\u25B6 ' + (e.label || 'invoke') + ' started' + (e.model ? ' (' + e.model + ')' : '');
+    } else if (e.event_type === 'invoke_end') {
+      cls += ' end';
+      text = '\u25A0 ' + (e.label || 'invoke') + ' done \u2014 ' + (e.num_turns || 0) + ' turns, $' + (e.cost_usd || 0).toFixed(2) + ', ' + fmtDuration((e.duration_ms || 0) / 1000);
+    } else if (e.event_type === 'tool_use') {
+      cls += ' tool';
+      var name = e.tool_name || '?';
+      var input = e.tool_input || {};
+      var detail = '';
+      if (name === 'Read') detail = input.file_path || '';
+      else if (name === 'Write' || name === 'Edit') detail = input.file_path || '';
+      else if (name === 'Bash') detail = (input.command || '').substring(0, 80);
+      else if (name === 'Grep') detail = (input.pattern || '') + ' ' + (input.path || '');
+      else if (name === 'Glob') detail = input.pattern || '';
+      else detail = JSON.stringify(input).substring(0, 60);
+      text = '\u2022 ' + name + ' ' + detail;
+    } else {
+      return; // skip other event types
+    }
+
+    html += '<div class="' + cls + '"><span class="ts">' + esc(ts) + '</span>' + esc(text) + '</div>';
+  });
+
+  logBody.innerHTML = html || '<div class="log-entry" style="padding:16px;opacity:0.4">Waiting for activity...</div>';
+  logBody.scrollTop = logBody.scrollHeight;
+}
+
+function updateElapsed() {
+  if (!state || !state.startedAt) return;
+  var el = document.getElementById('elapsed');
+  if (el) el.textContent = fmtDuration((Date.now() - new Date(state.startedAt).getTime()) / 1000);
+}
+
+function connect() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.onopen = function() { setConn(true); };
+  ws.onclose = function() { setConn(false); setTimeout(connect, 2000); };
+  ws.onerror = function() { ws.close(); };
+  ws.onmessage = function(e) { try { state = JSON.parse(e.data); render(); } catch(ex) {} };
+}
+
+function poll() {
+  fetch('/api/state').then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) { if (d) { state = d; render(); } }).catch(function() {});
+}
+
+connect();
+setInterval(poll, 5000);
+setInterval(updateElapsed, 1000);
+</script>
+</body>
+</html>

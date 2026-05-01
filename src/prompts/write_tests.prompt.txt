@@ -1,0 +1,23 @@
+Write tests for the **{task_title}** task.
+
+## Task Description
+
+{description}
+
+## Codebase Research
+
+If `{orca.task_dir}/understand.json` exists, read it for architecture notes and key files identified during the research stage.
+
+## Tests to Write
+
+{test_list}
+
+## Rules
+
+- Each test should be independent — no shared mutable state between tests.
+- Follow the project's existing test conventions and patterns.
+- Include at least one negative test: verify the code does NOT produce false positives or unintended side effects.
+- Tests MUST import types and functions from the real source modules (e.g., `use crate::feature::*` or `use my_crate::feature::*`), not define them inline.
+- Do NOT put implementation stubs, trait definitions, struct definitions, or mock types in the test file. The test file should only contain tests and minimal test helpers.
+- If the source module doesn't exist yet, the tests will fail to compile — that is expected and correct. The develop stage will create the module.
+- Do NOT implement any feature code — only write the test file.

@@ -1,0 +1,163 @@
+name: orca-self-build
+project_dir: ..
+model: opus
+
+tasks:
+  file: tasks.yaml
+
+eval:
+  command: "bun test 2>&1"
+  parser: exit_code
+  timeout: 120
+
+workflow:
+  loop:
+    - eval
+    - develop
+  post:
+    - deploy
+    - qa
+
+stages:
+  develop:
+    toolset: all
+    max_turns: 150
+    escalation: true
+    supervisor: true
+  deploy:
+    command: |
+      # Kill any leftover test server
+      if [ -f /tmp/orca-qa-server.pid ]; then
+        kill $(cat /tmp/orca-qa-server.pid) 2>/dev/null || true
+        rm -f /tmp/orca-qa-server.pid
+      fi
+      rm -rf /tmp/orca-qa-env
+      # Setup fixture environment
+      bash fixtures/setup-qa-env.sh
+      # Start test server from source
+      bun run src/cli.ts serve --port 7071 --data-dir /tmp/orca-qa-env/data &
+      echo $! > /tmp/orca-qa-server.pid
+    wait_for: "curl -sf http://localhost:7071/health"
+    wait_timeout: 30
+  qa:
+    toolset: all
+    max_turns: 80
+
+supervisor:
+  model: opus
+  max_turns: 40
+
+git:
+  enabled: true
+  snapshot_before: develop
+  commit_after: loop
+  commit_message: "orca: {task_id} complete"
+
+scope:
+  writable: ["src/**", "templates/**", "self-build/**", "fixtures/**", "schemas/**"]
+  readable: ["**"]
+
+budget:
+  max_iterations: 10
+  max_cost: 50.0
+  stage_timeout: 600
+
+notifications:
+  on_escalation: true
+  on_task_complete: true
+  on_build_complete: true
+  on_budget_warning: 0.8
+  channels:
+    - type: command
+      run: "curl -s -d '{message}' https://ntfy.sh/one-zero-orca-self-build"
+
+prompts:
+  stages:
+    develop: |
+      ## QA feedback
+
+      If this is not the first iteration, a previous QA stage may have found
+      integration issues. Check for a QA failure report:
+
+        cat .orca/tasks/{task_id}/qa.json 2>/dev/null
+
+      If the file exists and shows status "failed", read the issues field.
+      The unit tests (eval) passed but the live integration test did not.
+      Fix the issue described in the QA report, then let eval verify your
+      changes compile and pass unit tests.
+    qa: |
+      ## Orca Integration QA
+
+      You are testing a live orca serve instance running at http://localhost:7071.
+      The deploy stage has already started the server and set up a fixture
+      project at /tmp/orca-qa-env/project.
+
+      Do NOT read orca source code. Do NOT run bun test. Only test the live
+      system by interacting with it.
+
+      ### Fixture environment
+
+      The fixture at /tmp/orca-qa-env/project is a git repo with 3 tasks:
+      - task1: addition function (correct, passes eval immediately)
+      - task2: multiplication function (has bug, mock_develop command stage fixes it)
+      - task3: division function (has bug, mock_develop command stage fixes it)
+
+      The fixture uses command stages instead of Claude agents, so builds
+      complete in seconds with zero API cost. Use this to test build lifecycle.
+
+      ### Testing tools
+
+      Use curl + jq to test the REST API:
+      ```bash
+      # Create a build from the fixture
+      curl -sf -X POST http://localhost:7071/builds \
+        -H "Content-Type: application/json" \
+        -d '{"repo": "/tmp/orca-qa-env/project", "name": "test-name"}'
+
+      # List / detail / stop / intervene
+      curl -sf http://localhost:7071/builds | jq .
+      curl -sf http://localhost:7071/builds/$ID | jq .
+      curl -sf -X DELETE http://localhost:7071/builds/$ID
+      curl -sf -X POST http://localhost:7071/builds/$ID/intervene \
+        -H "Content-Type: application/json" -d '{"action":"continue"}'
+
+      # SSE stream (capture a few seconds)
+      timeout 5 curl -sf -N http://localhost:7071/builds/$ID/events 2>&1 || true
+
+      # Check HTTP status codes
+      curl -s -o /dev/null -w "%{http_code}" http://localhost:7071/builds/nonexistent
+
+      # Verify git commits in the cloned repo
+      git -C /tmp/orca-qa-env/data/builds/NAME/repo log --oneline
+      ```
+
+      The dashboard is served at GET /. Verify it returns HTML.
+
+      ### What to test
+
+      Focus on the feature that was just implemented in the develop stage.
+      Read the task description and develop_focus from the task variables
+      (available at {description}) to understand what changed.
+
+      Test 3-5 scenarios that exercise the new or modified functionality.
+      Also run a basic smoke test (health check, create a build, verify it
+      completes) to catch regressions.
+
+      ### Cleanup
+
+      ALWAYS kill the test server when done, even if tests fail:
+      ```bash
+      if [ -f /tmp/orca-qa-server.pid ]; then
+        kill $(cat /tmp/orca-qa-server.pid) 2>/dev/null || true
+        rm -f /tmp/orca-qa-server.pid
+      fi
+      rm -rf /tmp/orca-qa-env
+      ```
+
+      ### Verdict
+
+      Return structured output:
+      - status: "passed" if all tests passed
+      - status: "failed" if any test failed
+      - summary: what was tested and results
+      - issues: specific failures (empty string if passed)

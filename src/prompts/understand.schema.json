@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "key_files": {
+      "type": "string",
+      "description": "The most important files to modify, with brief notes on each."
+    },
+    "architecture_notes": {
+      "type": "string",
+      "description": "How the relevant parts of the codebase are structured."
+    },
+    "implementation_approach": {
+      "type": "string",
+      "description": "High-level approach for the implementation."
+    },
+    "risks": {
+      "type": "string",
+      "description": "Potential risks, edge cases, or constraints to watch for."
+    }
+  },
+  "required": ["key_files", "architecture_notes", "implementation_approach"]
+}

@@ -1,0 +1,22 @@
+Run a regression check after completing the **{task_title}** task.
+
+The task implementation is complete (all task-specific tests pass). Now verify that no existing functionality was broken.
+
+## Steps
+
+1. Run the full test suite.
+2. Compare results against the baseline. Any NEW failures (tests that passed in baseline but fail now) are regressions.
+3. Pre-existing failures (tests already failing in baseline) are NOT your problem.
+
+## If Regressions Found
+
+For each regression:
+1. Identify which of your changes caused it.
+2. Fix the regression without breaking your new feature.
+3. Re-run the full suite to verify.
+
+## Rules
+
+- Do NOT skip or ignore regressions. Every new failure must be fixed.
+- Do NOT weaken existing tests to make them pass.
+- Your task-specific tests must still pass after any regression fixes.

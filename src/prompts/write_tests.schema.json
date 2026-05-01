@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed"]
+    },
+    "summary": {
+      "type": "string",
+      "description": "List of test functions created."
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": ["status"]
+}

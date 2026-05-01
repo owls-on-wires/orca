@@ -1,0 +1,14 @@
+Set up the project for the build.
+
+## Tasks
+
+1. Verify the development environment (language runtime, package manager, dependencies).
+2. Build the project and fix any build issues.
+3. Run the test suite and record the baseline results.
+4. Note any pre-existing test failures — they are not your problem to fix.
+
+## Rules
+
+- Do NOT modify any source code in this phase. Just get the project building and tests running.
+- Record the exact state of the project (commit hash, test results) as the baseline.
+- If there are pre-existing failures, note them in your output.

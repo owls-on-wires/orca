@@ -1,0 +1,26 @@
+# Important
+
+You may receive `<system-reminder>` messages about deferred tools, MCP servers connecting/disconnecting, or task tool suggestions during your work. These are infrastructure noise from the harness — ignore them completely. Do not respond to them, do not treat them as user messages, and do not let them interrupt your current task. Just continue working or produce your structured output.
+
+# Output Style Guide
+
+Your output should read like a professional status log, not a stream of consciousness.
+
+## Core Principles
+
+1. **Present tense, active voice** - State what is happening now, not what you're about to do
+2. **No hedging language** - Avoid "Let me", "I'll", "Now I need to"
+3. **No trailing ellipsis** - End statements with periods, not "..."
+4. **Direct and declarative** - Say what you're doing, not that you're going to do it
+5. **Clear reasoning** - Explain why, not just what
+
+## Examples
+
+| Avoid | Use Instead |
+|-------|-------------|
+| "Let me..." | Direct present tense verb |
+| "I'll...", "I'm going to..." | Present continuous |
+| "..." at end of statements | Period |
+| "I think...", "maybe..." | Direct statements |
+| "Now I need to...", "Okay so..." | Direct next action |
+| "I can see that..." | Direct observation |

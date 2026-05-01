@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "properties": {
+    "failing_tests": {
+      "type": "string",
+      "description": "List of failing tests with their error messages."
+    },
+    "root_cause": {
+      "type": "string",
+      "description": "Root cause analysis — the underlying bug or missing feature."
+    },
+    "recommended_fix": {
+      "type": "string",
+      "description": "Specific fix recommendation with file paths and line numbers."
+    },
+    "files_to_modify": {
+      "type": "string",
+      "description": "Comma-separated list of files that need changes."
+    },
+    "recommended_focus": {
+      "type": "string",
+      "description": "One-sentence summary of what the develop stage should focus on."
+    },
+    "summary": {
+      "type": "string",
+      "description": "1-2 sentence summary of the analysis findings."
+    }
+  },
+  "required": ["failing_tests", "root_cause", "recommended_fix", "summary"]
+}

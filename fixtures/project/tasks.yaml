@@ -1,0 +1,11 @@
+- id: task1
+  title: "Addition function"
+  depends_on: []
+
+- id: task2
+  title: "Multiplication function"
+  depends_on: [task1]
+
+- id: task3
+  title: "Division function with error handling"
+  depends_on: [task2]

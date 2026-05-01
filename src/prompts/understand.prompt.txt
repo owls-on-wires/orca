@@ -1,0 +1,24 @@
+Research the codebase to understand how to implement **{task_title}**.
+
+## Task Description
+
+{description}
+
+## Research Focus
+
+{understand_focus}
+
+## Instructions
+
+1. Read the relevant source files to understand the current architecture.
+2. Identify the key types, functions, and modules involved.
+3. Trace the code paths that this task will need to modify or extend.
+4. Note any patterns, conventions, or constraints that the implementation must follow.
+5. Identify potential risks or edge cases.
+
+## Rules
+
+- Do NOT modify any source files. This is a read-only research stage.
+- Be specific: name exact files, functions, types, and line numbers.
+- If the task description references existing features, find and read them.
+- Focus on what exists today, not what should be built — that comes later.

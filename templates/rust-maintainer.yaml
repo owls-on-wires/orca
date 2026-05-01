@@ -1,0 +1,59 @@
+name: rust-maintainer
+project_dir: .
+model: opus
+
+tasks:
+  file: features.yaml
+  defaults:
+    budget:
+      max_iterations: 10
+      max_cost: 80.0
+    stages:
+      understand: { max_turns: 60 }
+      write_tests: { max_turns: 80 }
+      analyze: { max_turns: 40 }
+      develop: { max_turns: 150 }
+      regression: { max_turns: 40 }
+
+eval:
+  command: "cargo test --features dev --test {task_id} 2>&1"
+  parser: cargo_test
+
+workflow:
+  setup: setup
+  pre:
+    - understand
+    - write_tests
+  loop:
+    - eval
+    - analyze
+    - develop
+  post:
+    - regression
+
+stages:
+  setup:
+    toolset: all
+    max_turns: 200
+  understand:
+    toolset: read_only
+    condition: "has: understand_focus"
+  write_tests:
+    toolset: code
+    condition: "file_missing: tests/{task_id}.rs"
+  analyze:
+    toolset: read_only
+  develop:
+    toolset: all
+    escalation: true
+    supervisor: true
+  regression:
+    toolset: all
+
+git:
+  enabled: true
+  snapshot_before: develop
+  commit_after: loop
+
+scope:
+  readable: ["**"]

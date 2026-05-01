@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "fix_test",
+        "fix_environment",
+        "resolve_requirements",
+        "revert",
+        "clear_session",
+        "escalate_human",
+        "continue"
+      ],
+      "description": "The action to take in response to the escalation."
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Detailed explanation of why this action was chosen."
+    },
+    "details": {
+      "type": "string",
+      "description": "Description of changes made, if any (test fixes, environment fixes, requirement decisions)."
+    },
+    "escalation_message": {
+      "type": "string",
+      "description": "Message for the human operator, if action is escalate_human."
+    },
+    "summary": {
+      "type": "string",
+      "description": "1-2 sentence summary of the supervisor's decision."
+    }
+  },
+  "required": ["action", "reasoning", "summary"]
+}

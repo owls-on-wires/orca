@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orca Service Mode — Proposal</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-dim: #1f3a5f;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+
+  h1 {
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    color: var(--text);
+  }
+
+  h1 + p { color: var(--text-muted); margin-bottom: 2.5rem; }
+
+  h2 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+    color: var(--accent);
+  }
+
+  p, li { color: var(--text); margin-bottom: 0.6rem; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 1rem; }
+  li { margin-bottom: 0.3rem; }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.85em;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15em 0.4em;
+  }
+
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    margin-bottom: 1rem;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+  }
+
+  th {
+    background: var(--surface);
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  td { background: var(--bg); }
+  tr:hover td { background: var(--surface); }
+
+  .mermaid {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-dim);
+    padding: 0.8rem 1rem;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 1rem;
+  }
+
+  .callout p { margin-bottom: 0; }
+
+  .tag {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.15em 0.5em;
+    border-radius: 12px;
+    margin-right: 0.3rem;
+  }
+
+  .tag-new { background: #1a4d2e; color: var(--green); }
+  .tag-changed { background: #3d2e00; color: var(--orange); }
+  .tag-unchanged { background: #1c1c1c; color: var(--text-muted); }
+
+  .feature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .feature-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+  }
+
+  .feature-card h4 {
+    font-size: 0.95rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .feature-card p {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-bottom: 0;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 2.5rem 0;
+  }
+
+  .phase-label {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Orca Service Mode</h1>
+<p>Proposal: containerized long-running build orchestrator with WebSocket API, git integration, and nix-based environments.</p>
+
+<!-- -------------------------------------------------------- -->
+<h2>Overview</h2>
+
+<p>Orca today is a CLI binary that runs locally, operates on a local directory, and exits when the build completes. This proposal upgrades it to a <strong>persistent service</strong>. It pulls git repos, provisions per-project nix environments, runs Claude Code agents, and exposes a REST API with SSE streaming for a live web interface.</p>
+
+<div class="callout">
+  <p><strong>Core principle:</strong> The engine is unchanged. The existing loop, invoke, eval, supervisor, state, and scope modules work as-is. The service wraps them with remote git, a nix shell, and a WebSocket interface.</p>
+</div>
+
+<div class="feature-grid">
+  <div class="feature-card">
+    <h4>Serve Mode</h4>
+    <p>Long-running <code>orca serve</code> process. Accepts build requests via WebSocket. Manages multiple concurrent builds.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Git Integration</h4>
+    <p>Clone remote repos, push branches, create pull requests via GitHub/GitLab API. No local directory required.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Nix Environments</h4>
+    <p>Per-project nix flakes provide toolchains. Shared <code>/nix/store</code> volume for caching. One container image for all projects.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Web Interface</h4>
+    <p>REST API for commands, Server-Sent Events for streaming. Create builds, monitor progress, respond to interventions, view logs &mdash; all from the browser.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Deploy + QA Stages</h4>
+    <p>New stage types in the workflow loop. Deploy pushes changes to a test environment; QA agent verifies with browser, SSH, HTTP.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Self-Improvement</h4>
+    <p>Orca can improve its own codebase. Bootstrap pattern: the running version builds and tests the next version.</p>
+  </div>
+</div>
+
+<!-- -------------------------------------------------------- -->
+<h2>Architecture</h2>
+
+<div class="mermaid">
+%%{init: {'theme': 'dark'}}%%
+graph TB
+    subgraph container["Docker Container"]
+        serve["orca serve<br/><small>WS server, build manager</small>"]
+
+        subgraph build1["Build: project-alpha"]
+            nix1["nix develop"]
+            run1["orca run project.orca.yaml"]
+            claude1["claude (agent)"]
+            eval1["eval (subprocess)"]
+        end
+
+        subgraph build2["Build: project-beta"]
+            nix2["nix develop"]
+            run2["orca run project.orca.yaml"]
+            claude2["claude (agent)"]
+            eval2["eval (subprocess)"]
+        end
+
+        serve --> nix1 --> run1
+        run1 --> claude1
+        run1 --> eval1
+        serve --> nix2 --> run2
+        run2 --> claude2
+        run2 --> eval2
+    end
+
+    ws["Web UI<br/><small>Browser</small>"]
+    git["Git Remote<br/><small>GitHub / GitLab</small>"]
+    creds[".claude credentials<br/><small>mounted read-only</small>"]
+    nixvol["/nix/store volume<br/><small>shared cache</small>"]
+    data["/data volume<br/><small>repos, state, logs</small>"]
+
+    ws <-->|"WebSocket"| serve
+    serve <-->|"clone / push / PR"| git
+    creds -.->|"mount"| container
+    nixvol -.->|"mount"| container
+    data -.->|"mount"| container
+
+    style container fill:#161b22,stroke:#30363d,color:#e6edf3
+    style build1 fill:#0d1117,stroke:#30363d,color:#e6edf3
+    style build2 fill:#0d1117,stroke:#30363d,color:#e6edf3
+    style serve fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style ws fill:#1a4d2e,stroke:#3fb950,color:#e6edf3
+    style git fill:#3d2e00,stroke:#d29922,color:#e6edf3
+</div>
+
+<p>The <code>orca serve</code> process is the outer shell. It never enters a nix environment itself. When a build is requested, it clones the repo, then spawns <code>nix develop --command orca run ...</code> as a child process. The inner <code>orca run</code> is the existing code path &mdash; completely unchanged. It inherits the nix environment, so all <code>claude</code> invocations and <code>eval</code> commands have access to the project's toolchain.</p>
+
+<!-- -------------------------------------------------------- -->
+<h2>Process Model</h2>
+
+<div class="mermaid">
+%%{init: {'theme': 'dark'}}%%
+sequenceDiagram
+    participant UI as Web UI
+    participant S as orca serve
+    participant N as nix develop
+    participant R as orca run
+    participant C as claude
+    participant E as eval
+
+    UI->>S: create_build { repo, spec }
+    S->>S: git clone repo
+    S->>N: spawn nix develop --command orca run ...
+    N->>R: exec (inherits nix PATH)
+
+    loop Iteration Loop
+        R->>E: eval command (bun test, cargo test)
+        E-->>R: PASS / FAIL
+        R->>C: analyze stage
+        C-->>R: analysis result
+        R->>C: develop stage
+        C-->>R: code changes
+    end
+
+    R->>R: eval PASS, all tasks complete
+    R-->>S: exit 0
+    S->>S: git push branch
+    S->>S: create PR via forge API
+    S-->>UI: state_update { status: completed, pr_url }
+</div>
+
+<!-- -------------------------------------------------------- -->
+<h2>Deploy + QA Workflow</h2>
+
+<p>For projects that need a live environment for testing (web apps, APIs, services with Docker Compose), the workflow adds two stage types between <code>develop</code> and the next eval:</p>
+
+<div class="mermaid">
+%%{init: {'theme': 'dark'}}%%
+graph LR
+    eval["eval<br/><small>unit tests</small>"]
+    analyze["analyze<br/><small>agent</small>"]
+    develop["develop<br/><small>agent</small>"]
+    deploy["deploy<br/><small>command</small>"]
+    qa["qa<br/><small>agent + browser</small>"]
+
+    eval -->|FAIL| analyze --> develop --> deploy --> qa
+    qa -->|FAIL| eval
+    qa -->|PASS| done["next task"]
+    eval -->|PASS| done
+
+    style eval fill:#1a4d2e,stroke:#3fb950,color:#e6edf3
+    style analyze fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style develop fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style deploy fill:#3d2e00,stroke:#d29922,color:#e6edf3
+    style qa fill:#2a1a3e,stroke:#bc8cff,color:#e6edf3
+    style done fill:#161b22,stroke:#30363d,color:#e6edf3
+</div>
+
+<p><code>deploy</code> is a command stage (like <code>eval</code>), not a Claude agent. It runs a shell command that pushes changes to a live test environment. <code>qa</code> is a Claude agent with access to Playwright (browser), SSH, and HTTP tools.</p>
+
+<table>
+  <thead>
+    <tr><th>Project Type</th><th>deploy command</th><th>qa verifies via</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>CLI tool / library</td>
+      <td><em>none needed</em></td>
+      <td>Bash (run the tool)</td>
+    </tr>
+    <tr>
+      <td>Web app (live reload)</td>
+      <td><em>none &mdash; live reload picks up changes</em></td>
+      <td>Playwright (browser)</td>
+    </tr>
+    <tr>
+      <td>API service</td>
+      <td><code>ssh server 'cd app && git pull && docker compose restart api'</code></td>
+      <td>curl / HTTP requests</td>
+    </tr>
+    <tr>
+      <td>Full stack (e.g. one-zero)</td>
+      <td><code>ssh server 'cd app && git pull && docker compose up -d'</code></td>
+      <td>SSH + Playwright + curl</td>
+    </tr>
+    <tr>
+      <td>Orca self-improvement</td>
+      <td><code>bun run build && deploy-test-instance.sh</code></td>
+      <td>WS client + curl</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <p><strong>Key insight:</strong> The complexity of the project under test doesn't affect orca's architecture. It's handled entirely by the spec: what <code>deploy</code> runs and what tools the <code>qa</code> agent has. Orca's engine stays the same.</p>
+</div>
+
+<!-- -------------------------------------------------------- -->
+<h2>Nix Environment Model</h2>
+
+<div class="mermaid">
+%%{init: {'theme': 'dark'}}%%
+graph TB
+    base["Base Container Image<br/><small>nixos/nix + claude + git + orca</small>"]
+
+    subgraph projects["Per-Project Nix Shells"]
+        flakeA["project-alpha/flake.nix<br/><small>rust, cargo-nextest</small>"]
+        flakeB["project-beta/flake.nix<br/><small>nodejs, bun, playwright</small>"]
+        flakeC["orca/flake.nix<br/><small>bun, typescript</small>"]
+    end
+
+    nixstore["/nix/store<br/><small>shared volume, content-addressed, deduplicated</small>"]
+
+    base --> flakeA
+    base --> flakeB
+    base --> flakeC
+    flakeA --> nixstore
+    flakeB --> nixstore
+    flakeC --> nixstore
+
+    style base fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style projects fill:#161b22,stroke:#30363d,color:#e6edf3
+    style nixstore fill:#1a4d2e,stroke:#3fb950,color:#e6edf3
+</div>
+
+<p>One Docker image for all projects. Each project declares its toolchain via a nix flake or a packages list. The <code>/nix/store</code> volume persists across builds &mdash; first build downloads packages, subsequent builds are instant.</p>
+
+<p>The serve process detects the nix environment type and wraps builds accordingly. Resolution order:</p>
+
+<table>
+  <thead>
+    <tr><th>Priority</th><th>Condition</th><th>Command</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>Spec declares <code>nix.flake</code></td><td><code>nix develop {path} --command orca run ...</code></td></tr>
+    <tr><td>2</td><td>Spec declares <code>nix.packages</code></td><td><code>nix shell nixpkgs#pkg1 nixpkgs#pkg2 --command orca run ...</code></td></tr>
+    <tr><td>3</td><td><code>flake.nix</code> exists in repo</td><td><code>nix develop {repoDir} --command orca run ...</code></td></tr>
+    <tr><td>4</td><td><code>shell.nix</code> exists in repo</td><td><code>nix-shell {repoDir}/shell.nix --run "orca run ..."</code></td></tr>
+    <tr><td>5</td><td>None of the above</td><td><code>orca run ...</code> (no nix)</td></tr>
+  </tbody>
+</table>
+
+<pre><code># Flake (explicit)
+nix:
+  flake: true                    # use repo root flake.nix
+
+# Flake (subdirectory)
+nix:
+  flake: ./backend               # use flake at specific path
+
+# Ad-hoc packages (no flake needed)
+nix:
+  packages: [nodejs, bun, git]   # nix shell -p
+
+# Disable (even if flake.nix exists)
+nix:
+  enable: false</code></pre>
+
+<p>Every subprocess (claude, eval commands, deploy scripts) inherits the nix environment automatically. No changes to <code>invoke.ts</code> or <code>eval.ts</code> needed.</p>
+
+<!-- -------------------------------------------------------- -->
+<h2>REST API + SSE</h2>
+
+<p>Commands use standard REST endpoints (curl-testable, auth-middleware friendly). Live streaming uses Server-Sent Events (SSE) &mdash; simpler than WebSockets, with automatic reconnect built into the browser's <code>EventSource</code> API.</p>
+
+<h3>REST Endpoints (Commands)</h3>
+<table>
+  <thead>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>POST</code></td><td><code>/api/builds</code></td><td>Create a new build. Body: <code>{ repo, branch?, spec?, spec_path? }</code></td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/builds</code></td><td>List all builds with summary status</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/builds/:id</code></td><td>Get full state for a single build</td></tr>
+    <tr><td><code>DELETE</code></td><td><code>/api/builds/:id</code></td><td>Stop a running build (SIGTERM)</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/builds/:id/intervene</code></td><td>Respond to intervention. Body: <code>{ action, note? }</code></td></tr>
+  </tbody>
+</table>
+
+<h3>SSE Streams (Live Updates)</h3>
+<table>
+  <thead>
+    <tr><th>Path</th><th>Events</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>GET /api/builds/:id/events</code></td><td><code>state</code>, <code>log</code>, <code>intervention</code></td><td>Stream for a single build</td></tr>
+    <tr><td><code>GET /api/events</code></td><td><code>state</code>, <code>log</code>, <code>intervention</code></td><td>Stream for all builds (includes buildId in data)</td></tr>
+  </tbody>
+</table>
+
+<!-- -------------------------------------------------------- -->
+<h2>Git Integration</h2>
+
+<h3>New Operations</h3>
+<table>
+  <thead>
+    <tr><th>Operation</th><th>Used By</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>clone(repo, branch, dir)</code></td><td>serve (build startup)</td><td>Clone a remote repo</td></tr>
+    <tr><td><code>createBranch(name)</code></td><td>serve (build startup)</td><td>Create a working branch for the build</td></tr>
+    <tr><td><code>push(remote, branch)</code></td><td>serve (build completion)</td><td>Push the result branch</td></tr>
+    <tr><td><code>createPR(title, head, base)</code></td><td>serve (build completion)</td><td>Create a PR via GitHub/GitLab API</td></tr>
+  </tbody>
+</table>
+
+<h3>Existing Operations (unchanged)</h3>
+<table>
+  <thead>
+    <tr><th>Operation</th><th>Used By</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>snapshot(message)</code></td><td>inner orca run</td><td>Commit all changes (pre-stage safety snapshot)</td></tr>
+    <tr><td><code>revert(hash)</code></td><td>inner orca run</td><td>Hard reset to a previous snapshot</td></tr>
+    <tr><td><code>commit(message)</code></td><td>inner orca run</td><td>Commit completed task</td></tr>
+  </tbody>
+</table>
+
+<h3>Forge Module (<code>git/forge.ts</code>)</h3>
+<p>New module for GitHub/GitLab API interaction. Used by the serve process after a build completes to create PRs. Supports token-based auth via environment variable.</p>
+
+<pre><code>interface ForgeConfig {
+  type: "github" | "gitlab";
+  token: string;  // from env: GITHUB_TOKEN or GITLAB_TOKEN
+}
+
+createPR(config, repo, head, base, title, body): Promise&lt;{ url: string; number: number }&gt;
+mergePR(config, repo, number): Promise&lt;void&gt;</code></pre>
+
+<!-- -------------------------------------------------------- -->
+<h2>Self-Improvement (Bootstrap)</h2>
+
+<div class="mermaid">
+%%{init: {'theme': 'dark'}}%%
+sequenceDiagram
+    participant S as orca serve (v1)
+    participant R as orca run (inside nix)
+    participant C as claude agent
+    participant T as Test Suite
+
+    S->>S: git clone orca repo
+    S->>R: nix develop --command orca run self-improve.yaml
+
+    loop Iteration
+        R->>T: bun test (unit tests)
+        T-->>R: FAIL
+        R->>C: analyze failures
+        C-->>R: analysis
+        R->>C: develop fixes
+        C-->>R: code changes
+    end
+
+    R->>T: bun test
+    T-->>R: PASS
+    R->>T: bun run build (compile binary)
+    T-->>R: OK
+    R-->>S: exit 0
+
+    S->>S: git push branch
+    S->>S: create PR
+    Note over S: CI deploys new version
+</div>
+
+<p>The running orca (v1) builds and tests the next version (v2) using the standard build loop. v2 is just source code being modified by an agent and tested with <code>bun test</code>. The bootstrap is the compiler pattern: the known-good version builds the next version. No recursion, no Docker-in-Docker.</p>
+
+<p>For full integration testing of the serve mode and WS protocol, the workflow adds a deploy + qa stage:</p>
+
+<pre><code>workflow:
+  loop: [eval, analyze, develop, deploy, qa]
+
+stages:
+  deploy:
+    command: "bun run build && ./scripts/deploy-test-instance.sh"
+    timeout: 60
+  qa:
+    toolset: all
+    # QA agent hits the test instance's WS API, submits a test build,
+    # verifies monitoring works, checks intervention flow</code></pre>
+
+<!-- -------------------------------------------------------- -->
+<h2>Authentication</h2>
+
+<p>Claude Code uses OAuth tokens stored in <code>~/.claude/.credentials.json</code>. For the containerized service, this file is mounted read-only from the host:</p>
+
+<pre><code>volumes:
+  - ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro</code></pre>
+
+<table>
+  <thead>
+    <tr><th>Concern</th><th>Detail</th><th>Mitigation</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Rate limiting</td>
+      <td>Max plan rate limit shared across concurrent builds</td>
+      <td>Agent stages are long-running (minutes). Concurrent builds unlikely to hit limits.</td>
+    </tr>
+    <tr>
+      <td>Token refresh</td>
+      <td>Access token has expiry; refresh token may be single-use</td>
+      <td>Long expiry (~1 year). Monitor and handle refresh at the serve layer if needed.</td>
+    </tr>
+    <tr>
+      <td>Credential leakage</td>
+      <td>Compromised agent could read the token</td>
+      <td>Mounted read-only. Network-restricted container. Token scoped to Claude Code sessions only.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- -------------------------------------------------------- -->
+<h2>Container Specification</h2>
+
+<h3>Dockerfile</h3>
+<pre><code>FROM nixos/nix:latest
+
+# Enable flakes
+RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
+
+# Core tools (available outside nix shells)
+RUN nix-env -iA nixpkgs.git nixpkgs.openssh nixpkgs.curl nixpkgs.bun
+
+# Claude Code
+RUN npm install -g @anthropic-ai/claude-code
+
+# Orca binary
+COPY bin/orca /usr/local/bin/orca
+
+VOLUME /nix
+VOLUME /data
+
+EXPOSE 7070
+
+CMD ["orca", "serve", "--data-dir", "/data"]</code></pre>
+
+<h3>Docker Compose</h3>
+<pre><code>services:
+  orca:
+    build: ./orca
+    ports:
+      - "7070:7070"
+    volumes:
+      - nix-store:/nix
+      - orca-data:/data
+      - ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - ~/.ssh:/root/.ssh:ro
+    environment:
+      - GITHUB_TOKEN
+    restart: unless-stopped
+
+volumes:
+  nix-store:
+  orca-data:</code></pre>
+
+<!-- -------------------------------------------------------- -->
+<h2>Spec Changes</h2>
+
+<p>New fields in <code>project.orca.yaml</code> (all optional, backwards-compatible):</p>
+
+<pre><code># Source — new fields for remote mode
+repo: git@github.com:org/project.git    # clone URL
+branch: main                             # default branch
+
+# Forge — PR creation on build completion
+forge:
+  type: github                           # github | gitlab
+  auto_pr: true                          # create PR on success
+  merge: false                           # auto-merge the PR
+
+# Deploy stage — command step in the workflow loop
+stages:
+  deploy:
+    command: "ssh server 'cd /app && git pull && docker compose up -d'"
+    wait_for: "curl -sf https://test.example.com/health"
+    timeout: 120</code></pre>
+
+<!-- -------------------------------------------------------- -->
+<h2>Codebase Changes</h2>
+
+<table>
+  <thead>
+    <tr><th>File</th><th>Status</th><th>Change</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>src/cli.ts</code></td>
+      <td><span class="tag tag-changed">changed</span></td>
+      <td>Add <code>orca serve</code> command. Spawns WS server, manages builds.</td>
+    </tr>
+    <tr>
+      <td><code>src/server.ts</code></td>
+      <td><span class="tag tag-new">new</span></td>
+      <td>HTTP server with REST API + SSE streaming. Build lifecycle management. Route dispatch.</td>
+    </tr>
+    <tr>
+      <td><code>src/git/index.ts</code></td>
+      <td><span class="tag tag-changed">changed</span></td>
+      <td>Add <code>clone</code>, <code>push</code>, <code>createBranch</code>.</td>
+    </tr>
+    <tr>
+      <td><code>src/git/forge.ts</code></td>
+      <td><span class="tag tag-new">new</span></td>
+      <td>GitHub/GitLab API client for PR creation and merging.</td>
+    </tr>
+    <tr>
+      <td><code>src/display/web.ts</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>Existing single-build monitor. Remains for local CLI use. Server mode uses src/server.ts instead.</td>
+    </tr>
+    <tr>
+      <td><code>src/web/dashboard.html</code></td>
+      <td><span class="tag tag-new">new</span></td>
+      <td>Web UI: build list, create build form, live monitoring, intervention modal, log viewer.</td>
+    </tr>
+    <tr>
+      <td><code>src/config/schema.ts</code></td>
+      <td><span class="tag tag-changed">changed</span></td>
+      <td>Add <code>repo</code>, <code>branch</code>, <code>forge</code> fields. Add <code>command</code> to stage config for deploy-type stages.</td>
+    </tr>
+    <tr>
+      <td><code>src/engine/loop.ts</code></td>
+      <td><span class="tag tag-changed">changed</span></td>
+      <td>Handle command-type stages in the loop (like eval, but for deploy). Minor change.</td>
+    </tr>
+    <tr>
+      <td><code>Dockerfile</code></td>
+      <td><span class="tag tag-new">new</span></td>
+      <td>nixos/nix base, claude code, orca binary, volumes.</td>
+    </tr>
+    <tr>
+      <td><code>docker-compose.yml</code></td>
+      <td><span class="tag tag-new">new</span></td>
+      <td>Service definition with volumes and credential mounts.</td>
+    </tr>
+    <tr>
+      <td><code>src/engine/invoke.ts</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>Spawns <code>claude</code> CLI as subprocess. Inherits nix PATH. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/engine/eval.ts</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>Runs <code>sh -c command</code>. Inherits nix PATH. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/state/index.ts</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>File-based state. Inner <code>orca run</code> writes, outer <code>orca serve</code> watches. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/engine/supervisor.ts</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>Escalation detection and supervisor agent. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/scope/*</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>File scope enforcement. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/parsers/*</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>Test output parsers. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/templates/*</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>Template variable resolution. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/notifications/*</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>Push notifications. No changes.</td>
+    </tr>
+    <tr>
+      <td><code>src/intervention/*</code></td>
+      <td><span class="tag tag-unchanged">unchanged</span></td>
+      <td>File-based protocol. Serve layer translates WS &harr; files. No changes to core.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- -------------------------------------------------------- -->
+<h2>Data Layout</h2>
+
+<pre><code>/data/
+  builds/
+    project-alpha/
+      repo/                    # git clone
+      repo/.orca/              # build state (written by inner orca run)
+        runs/{name}/{runId}/
+          state.json
+        tasks/{taskId}/
+          analyze.jsonl
+          develop.jsonl
+        build.jsonl
+        build.pid
+    project-beta/
+      repo/
+      repo/.orca/
+  serve.db                     # (future) build metadata index</code></pre>
+
+<!-- -------------------------------------------------------- -->
+<h2>New Features Summary</h2>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>Feature</th><th>Description</th><th>New Files</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><strong>Serve mode</strong></td>
+      <td><code>orca serve</code> &mdash; long-running process, manages builds, watches state, broadcasts to WS clients</td>
+      <td><code>server.ts</code></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><strong>REST API + SSE</strong></td>
+      <td>REST endpoints for commands, Server-Sent Events for live streaming. Curl-testable, no WS complexity.</td>
+      <td><code>server.ts</code></td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><strong>Git remote ops</strong></td>
+      <td>Clone, push, branch creation</td>
+      <td>changes to <code>git/index.ts</code></td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><strong>Forge integration</strong></td>
+      <td>Create and merge PRs via GitHub/GitLab API</td>
+      <td><code>git/forge.ts</code></td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td><strong>Web dashboard</strong></td>
+      <td>Build list, live monitoring, intervention UI, log viewer</td>
+      <td><code>web/dashboard.html</code></td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td><strong>Deploy stage type</strong></td>
+      <td>Command-based stage in the workflow loop for pushing to test environments</td>
+      <td>changes to <code>loop.ts</code>, <code>schema.ts</code></td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td><strong>Nix shell integration</strong></td>
+      <td>Serve spawns builds inside <code>nix develop</code>. Per-project flakes, shared store.</td>
+      <td><code>server.ts</code> (spawn logic)</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td><strong>Container packaging</strong></td>
+      <td>Dockerfile + compose for running the service</td>
+      <td><code>Dockerfile</code>, <code>docker-compose.yml</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- -------------------------------------------------------- -->
+<h2>What Does Not Change</h2>
+
+<p>The following modules are unchanged. The inner <code>orca run</code> process &mdash; which does all the actual orchestration work &mdash; is identical to today's CLI binary.</p>
+
+<ul>
+  <li><strong>Loop engine</strong> (<code>engine/loop.ts</code>) &mdash; task runner, iteration loop, budget management, stuck detection</li>
+  <li><strong>Invoke</strong> (<code>engine/invoke.ts</code>) &mdash; Claude Agent SDK, subprocess spawning, scope enforcement</li>
+  <li><strong>Eval</strong> (<code>engine/eval.ts</code>) &mdash; subprocess runner, parser dispatch</li>
+  <li><strong>Supervisor</strong> (<code>engine/supervisor.ts</code>) &mdash; escalation detection, retry/stop logic</li>
+  <li><strong>State</strong> (<code>state/index.ts</code>) &mdash; file-based persistence, BuildState/TaskState types</li>
+  <li><strong>Scope</strong> (<code>scope/</code>) &mdash; file access enforcement, glob matching</li>
+  <li><strong>Parsers</strong> (<code>parsers/</code>) &mdash; cargo_test, pytest, json, exit_code</li>
+  <li><strong>Templates</strong> (<code>templates/</code>) &mdash; variable resolution</li>
+  <li><strong>Notifications</strong> (<code>notifications/</code>) &mdash; push notifications via command channels</li>
+  <li><strong>Intervention</strong> (<code>intervention/</code>) &mdash; file-based protocol (serve translates WS &harr; files)</li>
+  <li><strong>Prompts</strong> (<code>config/prompts.ts</code>) &mdash; 3-tier prompt/schema resolution</li>
+  <li><strong>Config loading</strong> (<code>config/loader.ts</code>) &mdash; YAML validation</li>
+  <li><strong>Task DAG</strong> (<code>config/tasks.ts</code>) &mdash; dependency resolution, filtering</li>
+</ul>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#1f3a5f',
+    primaryTextColor: '#e6edf3',
+    primaryBorderColor: '#58a6ff',
+    lineColor: '#58a6ff',
+    secondaryColor: '#161b22',
+    tertiaryColor: '#0d1117',
+    noteBkgColor: '#161b22',
+    noteTextColor: '#e6edf3',
+    noteBorderColor: '#30363d',
+    actorBkg: '#1f3a5f',
+    actorBorder: '#58a6ff',
+    actorTextColor: '#e6edf3',
+    signalColor: '#58a6ff',
+    signalTextColor: '#e6edf3',
+  },
+  flowchart: { curve: 'basis' },
+  sequence: { mirrorActors: false },
+});
+</script>
+</body>
+</html>
