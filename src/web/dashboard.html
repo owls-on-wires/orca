@@ -636,6 +636,7 @@ function connectSSE(id) {
   };
 
   eventSource.addEventListener('status', function(e) {
+    markLive();
     var data = JSON.parse(e.data);
     if (buildDetail) {
       buildDetail.status = data.status;
@@ -648,12 +649,14 @@ function connectSSE(id) {
   });
 
   eventSource.addEventListener('stdout', function(e) {
+    markLive();
     var data = JSON.parse(e.data);
     buildLogs.push({ type: 'stdout', text: data.text });
     renderDetail();
   });
 
   eventSource.addEventListener('stderr', function(e) {
+    markLive();
     var data = JSON.parse(e.data);
     buildLogs.push({ type: 'stderr', text: data.text });
     renderDetail();
