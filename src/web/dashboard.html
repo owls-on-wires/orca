@@ -79,6 +79,25 @@ a:hover { text-decoration: underline; }
 .status-stopping { color: var(--yellow); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
+/* Filter bar */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.filter-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+.filter-bar input[type="checkbox"] { margin: 0; width: 14px; height: 14px; cursor: pointer; }
+.filter-bar .filter-count { font-size: 10px; opacity: 0.6; }
+
 /* Build list */
 .build-list-empty {
   text-align: center;
@@ -376,6 +395,12 @@ a:hover { text-decoration: underline; }
 <div class="container">
   <!-- Build List View -->
   <div class="view active" id="view-list">
+    <div class="filter-bar" id="filter-bar">
+      <label style="color:var(--cyan)"><input type="checkbox" checked style="accent-color:var(--cyan)" onchange="applyFilters()" data-status="running"> Running <span class="filter-count" id="count-running">(0)</span></label>
+      <label style="color:var(--green)"><input type="checkbox" checked style="accent-color:var(--green)" onchange="applyFilters()" data-status="completed"> Completed <span class="filter-count" id="count-completed">(0)</span></label>
+      <label style="color:var(--red)"><input type="checkbox" checked style="accent-color:var(--red)" onchange="applyFilters()" data-status="failed"> Failed <span class="filter-count" id="count-failed">(0)</span></label>
+      <label style="color:var(--yellow)"><input type="checkbox" checked style="accent-color:var(--yellow)" onchange="applyFilters()" data-status="cloning"> Cloning <span class="filter-count" id="count-cloning">(0)</span></label>
+    </div>
     <div id="build-list"></div>
   </div>
 
@@ -455,6 +480,7 @@ var buildDetail = null;
 var buildLogs = [];
 var intervention = null;
 var elapsedInterval = null;
+var lastBuilds = [];
 
 // ---------------------------------------------------------------------------
 // Templates
@@ -570,18 +596,53 @@ function showView(name, buildId) {
 function fetchBuilds() {
   fetch('/builds')
     .then(function(r) { return r.json(); })
-    .then(function(builds) { renderBuildList(builds); })
+    .then(function(builds) {
+      lastBuilds = builds || [];
+      renderBuildList(lastBuilds);
+    })
     .catch(function(e) { showToast('Failed to fetch builds: ' + e.message); });
+}
+
+function getCheckedStatuses() {
+  var checked = [];
+  document.querySelectorAll('#filter-bar input[data-status]').forEach(function(cb) {
+    if (cb.checked) checked.push(cb.getAttribute('data-status'));
+  });
+  return checked;
+}
+
+function updateFilterCounts(builds) {
+  var counts = { running: 0, completed: 0, failed: 0, cloning: 0 };
+  (builds || []).forEach(function(b) {
+    if (counts[b.status] !== undefined) counts[b.status]++;
+  });
+  Object.keys(counts).forEach(function(s) {
+    var el = document.getElementById('count-' + s);
+    if (el) el.textContent = '(' + counts[s] + ')';
+  });
+}
+
+function applyFilters() {
+  renderBuildList(lastBuilds);
 }
 
 function renderBuildList(builds) {
   var el = document.getElementById('build-list');
+  updateFilterCounts(builds);
+  var checkedStatuses = getCheckedStatuses();
+  var filtered = (builds || []).filter(function(b) {
+    return checkedStatuses.indexOf(b.status) !== -1;
+  });
   if (!builds || builds.length === 0) {
     el.innerHTML = '<div class="build-list-empty">No builds yet. Click "New Build" to start one.</div>';
     return;
   }
+  if (filtered.length === 0) {
+    el.innerHTML = '<div class="build-list-empty">No builds match the selected filters.</div>';
+    return;
+  }
   var html = '';
-  builds.forEach(function(b) {
+  filtered.forEach(function(b) {
     var elapsed = b.startedAt ? fmtDuration((Date.now() - new Date(b.startedAt).getTime()) / 1000) : '';
     var meta = b._buildMeta || {};
     html += '<div class="build-card" onclick="showView(\'detail\',\'' + esc(b.id) + '\')">';
