@@ -5,7 +5,7 @@
  * SSE streams state updates and logs to connected clients.
  */
 
-import { existsSync, readFileSync, mkdirSync, writeFileSync, watch } from "fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, watch, readdirSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { randomUUID } from "crypto";
 import * as yaml from "js-yaml";
@@ -184,6 +184,30 @@ function enrichState(state: Record<string, unknown>, build: BuildInfo): Record<s
   }
 
   return state;
+}
+
+/**
+ * Proactively read state.json from the build's .orca/runs/ directory.
+ * Used when lastState is null (e.g. watcher missed a fast build).
+ */
+function readStateFromDisk(build: BuildInfo): Record<string, unknown> | null {
+  const cache = loadBuildConfigSync(build);
+  const configName = cache?.config?.name || build.name;
+  const orcaDir = join(build.repoPath, ".orca");
+  const runsDir = join(orcaDir, "runs", configName);
+
+  if (!existsSync(runsDir)) return null;
+
+  try {
+    const runDirs = readdirSync(runsDir).sort();
+    if (runDirs.length === 0) return null;
+    const latestDir = join(runsDir, runDirs[runDirs.length - 1]);
+    const statePath = join(latestDir, "state.json");
+    if (!existsSync(statePath)) return null;
+    return JSON.parse(readFileSync(statePath, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +399,14 @@ function spawnBuild(build: BuildInfo) {
     build.exitCode = code;
     build.status = code === 0 ? "completed" : "failed";
 
+    // Final state read — watcher may have missed updates for fast builds
+    const finalState = readStateFromDisk(build);
+    if (finalState) {
+      enrichState(finalState, build);
+      build.lastState = finalState;
+      broadcastSSE(build, "state", { buildId: build.id, state: finalState });
+    }
+
     broadcastSSE(build, "status", {
       buildId: build.id,
       status: build.status,
@@ -539,6 +571,13 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
 
       // Re-enrich lastState with fresh log/eval data
       let enrichedState = build.lastState;
+      if (!enrichedState) {
+        // Watcher may have missed state updates — read from disk
+        enrichedState = readStateFromDisk(build);
+        if (enrichedState) {
+          build.lastState = enrichedState;
+        }
+      }
       if (enrichedState) {
         enrichedState = enrichState({ ...enrichedState }, build);
       }
@@ -605,8 +644,15 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
             status: build.status,
           }));
 
-          if (build.lastState) {
-            const freshState = enrichState({ ...build.lastState }, build);
+          let currentState = build.lastState;
+          if (!currentState) {
+            currentState = readStateFromDisk(build);
+            if (currentState) {
+              build.lastState = currentState;
+            }
+          }
+          if (currentState) {
+            const freshState = enrichState({ ...currentState }, build);
             controller.enqueue(sseEvent("state", {
               buildId: build.id,
               state: freshState,
