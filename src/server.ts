@@ -6,10 +6,11 @@
  */
 
 import { existsSync, readFileSync, mkdirSync, writeFileSync, watch } from "fs";
-import { join } from "path";
+import { join, resolve, dirname } from "path";
 import { randomUUID } from "crypto";
 import * as yaml from "js-yaml";
-import type { NixConfig } from "./config/schema";
+import type { NixConfig, OrcaConfig, WorkflowConfig } from "./config/schema";
+import { validateConfig } from "./config/loader";
 import { buildNixCommand } from "./nix";
 import { VERSION } from "./version";
 
@@ -63,6 +64,129 @@ function broadcastSSE(build: BuildInfo, event: string, data: unknown) {
 }
 
 // ---------------------------------------------------------------------------
+// State enrichment — inject task list, workflow, logs, eval results
+// ---------------------------------------------------------------------------
+
+interface BuildConfigCache {
+  taskIds: string[];
+  workflow: WorkflowConfig | undefined;
+  config: OrcaConfig;
+}
+
+const configCache = new Map<string, BuildConfigCache>();
+
+function loadBuildConfigSync(build: BuildInfo): BuildConfigCache | null {
+  if (configCache.has(build.id)) return configCache.get(build.id)!;
+
+  const specPath = build.specPath;
+  if (!specPath || !existsSync(specPath)) return null;
+
+  try {
+    const raw = readFileSync(specPath, "utf8");
+    const data = yaml.load(raw);
+    if (!validateConfig(data)) return null;
+    const config = data as OrcaConfig;
+
+    // loadTasks is async but for sync contexts, do inline resolution
+    let taskIds: string[] = [];
+    const tasks = config.tasks;
+    let taskList: any[] = [];
+
+    if (tasks.file) {
+      const filePath = resolve(dirname(specPath), tasks.file);
+      if (existsSync(filePath)) {
+        const taskRaw = readFileSync(filePath, "utf8");
+        const taskData = yaml.load(taskRaw);
+        if (Array.isArray(taskData)) {
+          taskList = taskData;
+        } else if (taskData && typeof taskData === "object" && Array.isArray((taskData as any).list)) {
+          taskList = (taskData as any).list;
+        }
+      }
+    }
+    if (tasks.list) {
+      taskList = [...taskList, ...tasks.list];
+    }
+    taskIds = taskList.map((t: any) => t.id);
+
+    const cache: BuildConfigCache = {
+      taskIds,
+      workflow: config.workflow,
+      config,
+    };
+    configCache.set(build.id, cache);
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+function readRecentLog(orcaDir: string, taskId: string, stage?: string | null): unknown[] {
+  if (!stage) return [];
+  const logPath = join(orcaDir, "tasks", taskId, `${stage}.jsonl`);
+  if (!existsSync(logPath)) return [];
+  try {
+    const content = readFileSync(logPath, "utf8");
+    const lines = content.trim().split("\n").filter(Boolean);
+    return lines.slice(-30).map(line => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function readEvalResults(orcaDir: string, taskIds: string[]): Record<string, unknown> {
+  const results: Record<string, unknown> = {};
+  for (const taskId of taskIds) {
+    const evalPath = join(orcaDir, "tasks", taskId, "eval_result.json");
+    if (existsSync(evalPath)) {
+      try {
+        results[taskId] = JSON.parse(readFileSync(evalPath, "utf8"));
+      } catch {}
+    }
+  }
+  return results;
+}
+
+function enrichState(state: Record<string, unknown>, build: BuildInfo): Record<string, unknown> {
+  const cache = loadBuildConfigSync(build);
+
+  if (cache) {
+    const stateTaskCount = Object.keys((state.tasks as any) || {}).length;
+    state._pendingTasks = cache.taskIds;
+    state._totalTasks = Math.max(cache.taskIds.length, stateTaskCount);
+    state._workflow = cache.workflow;
+
+    // Read eval results
+    const orcaDir = join(build.repoPath, ".orca");
+    const evalResults = readEvalResults(orcaDir, cache.taskIds);
+    if (Object.keys(evalResults).length > 0) {
+      state._evalResults = evalResults;
+    }
+  }
+
+  // Recent log for current task
+  const orcaDir = join(build.repoPath, ".orca");
+  const currentTaskId = state.currentTaskId as string | undefined;
+  if (currentTaskId) {
+    const currentTask = (state.tasks as any)?.[currentTaskId];
+    const currentStage = currentTask?.currentStage as string | undefined;
+    state._recentLog = readRecentLog(orcaDir, currentTaskId, currentStage);
+  }
+
+  // Intervention
+  const interventionPath = join(orcaDir, "intervention.json");
+  if (existsSync(interventionPath)) {
+    try {
+      state._intervention = JSON.parse(readFileSync(interventionPath, "utf8"));
+    } catch {}
+  }
+
+  return state;
+}
+
+// ---------------------------------------------------------------------------
 // Build lifecycle
 // ---------------------------------------------------------------------------
 
@@ -95,11 +219,12 @@ function watchBuildState(build: BuildInfo) {
     try {
       build.stateWatcher = watch(orcaDir, { recursive: true }, (_eventType, filename) => {
         if (filename && filename.endsWith("state.json")) {
-          // Read and broadcast state
+          // Read, enrich, and broadcast state
           const statePath = join(orcaDir, filename);
           try {
             if (existsSync(statePath)) {
               const state = JSON.parse(readFileSync(statePath, "utf8"));
+              enrichState(state, build);
               build.lastState = state;
               broadcastSSE(build, "state", { buildId: build.id, state });
             }
@@ -411,6 +536,13 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
       if (!build) {
         return Response.json({ error: "Build not found" }, { status: 404, headers: corsHeaders });
       }
+
+      // Re-enrich lastState with fresh log/eval data
+      let enrichedState = build.lastState;
+      if (enrichedState) {
+        enrichedState = enrichState({ ...enrichedState }, build);
+      }
+
       return Response.json({
         id: build.id,
         name: build.name,
@@ -419,7 +551,7 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
         exitCode: build.exitCode,
         repoUrl: build.repoUrl,
         repoPath: build.repoPath,
-        lastState: build.lastState,
+        lastState: enrichedState,
         stdoutLines: build.stdout.length,
         stderrLines: build.stderr.length,
       }, { headers: corsHeaders });
@@ -474,9 +606,10 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
           }));
 
           if (build.lastState) {
+            const freshState = enrichState({ ...build.lastState }, build);
             controller.enqueue(sseEvent("state", {
               buildId: build.id,
-              state: build.lastState,
+              state: freshState,
             }));
           }
         },

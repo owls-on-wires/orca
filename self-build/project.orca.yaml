@@ -13,6 +13,8 @@ eval:
 workflow:
   loop:
     - develop
+    - eval
+  post:
     - deploy
     - qa
 
