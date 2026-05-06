@@ -233,7 +233,7 @@ a:hover { text-decoration: underline; }
 .progress-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; font-size: 11px; }
 .progress-label { width: 45px; color: var(--text-dim); }
 .progress-bar { flex: 1; height: 4px; background: var(--bar-bg); border-radius: 2px; overflow: hidden; }
-.progress-fill { height: 100%; background: var(--bar-fill); border-radius: 2px; transition: width 0.3s ease; }
+.progress-fill { height: 100%; background: var(--bar-fill); border-radius: 2px; transition: width 0.3s ease, background-color 0.3s ease; }
 .progress-text { min-width: 80px; text-align: right; color: var(--text-dim); font-size: 10px; }
 
 /* Log viewer */
@@ -312,6 +312,21 @@ a:hover { text-decoration: underline; }
   font-size: 12px;
 }
 .intervention-note:focus { outline: none; border-color: var(--cyan); }
+
+/* Stuck badge */
+.stuck-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--yellow);
+  background: rgba(210, 153, 34, 0.1);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-left: 8px;
+}
 
 /* Conn indicator — fixed bottom footer */
 .conn { position: fixed; bottom: 0; left: 0; right: 0; height: 24px; background: var(--surface); border-top: 1px solid var(--border); font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; padding: 0 12px; z-index: 10; }
@@ -465,6 +480,44 @@ function fmtTime(iso) {
   if (!iso) return '';
   var d = new Date(iso);
   return d.toLocaleTimeString();
+}
+
+function getProgressBarColor(pct) {
+  if (pct < 60) return 'var(--green)';
+  if (pct <= 85) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function detectTaskStuck(taskState) {
+  if (!taskState || !taskState.history || taskState.history.length < 2) return null;
+  // Group history entries by label (stage name)
+  var byLabel = {};
+  taskState.history.forEach(function(h) {
+    if (!h.label) return;
+    if (!byLabel[h.label]) byLabel[h.label] = [];
+    byLabel[h.label].push(h);
+  });
+  // Check each loop stage for consecutive identical non-null outputHash
+  var labels = Object.keys(byLabel);
+  for (var i = 0; i < labels.length; i++) {
+    var entries = byLabel[labels[i]];
+    if (entries.length < 2) continue;
+    // Check from the end — count consecutive identical outputHash
+    var lastHash = entries[entries.length - 1].outputHash;
+    if (!lastHash) continue;
+    var count = 1;
+    for (var j = entries.length - 2; j >= 0; j--) {
+      if (entries[j].outputHash === lastHash) {
+        count++;
+      } else {
+        break;
+      }
+    }
+    if (count >= 2) {
+      return { stage: labels[i], count: count };
+    }
+  }
+  return null;
 }
 
 function showToast(msg) {
@@ -1091,6 +1144,10 @@ function renderDetail() {
       if (t && t.costUsd > 0) html += '<span>' + fmtCost(t.costUsd) + '</span>';
       if (t && t.currentStage) html += '<span>' + esc(t.currentStage) + '</span>';
       if (t && t.stopReason) html += '<span style="color:var(--red)">' + esc(t.stopReason).substring(0, 60) + '</span>';
+      var stuckInfo = detectTaskStuck(t);
+      if (stuckInfo) {
+        html += '<span class="stuck-badge">\u27F3 stuck \u2014 same output for ' + stuckInfo.count + ' iterations</span>';
+      }
       html += '</span></div>';
 
       // Collapsed failed tests list
@@ -1107,13 +1164,15 @@ function renderDetail() {
       if (isActive && t && taskStatus === 'running') {
         var iterPct = t.maxIterations > 0 ? (t.iteration / t.maxIterations * 100) : 0;
         var costPct = t.maxCost > 0 ? (t.costUsd / t.maxCost * 100) : 0;
+        var iterColor = getProgressBarColor(iterPct);
+        var costColor = getProgressBarColor(costPct);
         html += '<div class="progress-section">';
         html += '<div class="progress-row"><span class="progress-label">Iters</span>';
-        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + iterPct + '%"></div></div>';
+        html += '<div class="progress-bar"><div class="progress-fill" style="width:' + iterPct + '%;background:' + iterColor + '"></div></div>';
         html += '<span class="progress-text">' + (t.iteration || 0) + ' / ' + (t.maxIterations || '?') + '</span></div>';
         if (t.maxCost > 0) {
           html += '<div class="progress-row"><span class="progress-label">Budget</span>';
-          html += '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(costPct, 100) + '%"></div></div>';
+          html += '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(costPct, 100) + '%;background:' + costColor + '"></div></div>';
           html += '<span class="progress-text">' + fmtCost(t.costUsd) + ' / ' + fmtCost(t.maxCost) + '</span></div>';
         }
         html += '</div>';
