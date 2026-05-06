@@ -153,49 +153,71 @@ function resolveNixMode(repoPath: string, nixConfig: NixConfig | undefined): str
   if (nixConfig?.enable === false) return "none";
   if (nixConfig?.flake !== undefined) return "flake";
   if (nixConfig?.packages && nixConfig.packages.length > 0) return "packages";
-  if (existsSync(join(repoPath, "flake.nix"))) return "flake";
-  if (existsSync(join(repoPath, "shell.nix"))) return "shell.nix";
-  if (existsSync(join(repoPath, "default.nix"))) return "shell.nix";
+  if (!repoPath) return "none";
+  try {
+    if (existsSync(join(repoPath, "flake.nix"))) return "flake";
+    if (existsSync(join(repoPath, "shell.nix"))) return "shell.nix";
+    if (existsSync(join(repoPath, "default.nix"))) return "shell.nix";
+  } catch {
+    return "none";
+  }
   return "none";
 }
 
 function buildMetaFromCache(build: BuildInfo, cache: BuildConfigCache | null): Record<string, unknown> {
-  const config = cache?.config;
-  const workflow = cache?.workflow;
+  try {
+    const config = cache?.config;
+    const workflow = cache?.workflow;
 
-  // Derive workflow summary
-  let workflowSummary = "";
-  if (workflow) {
-    const parts: string[] = [];
-    if (workflow.pre) parts.push(...workflow.pre);
-    if (workflow.loop) parts.push(...workflow.loop);
-    if (workflow.post) parts.push(...workflow.post);
-    workflowSummary = parts.join(" → ");
+    // Derive workflow summary
+    let workflowSummary = "";
+    if (workflow) {
+      const parts: string[] = [];
+      if (workflow.pre) parts.push(...workflow.pre);
+      if (workflow.loop) parts.push(...workflow.loop);
+      if (workflow.post) parts.push(...workflow.post);
+      workflowSummary = parts.join(" \u2192 ");
+    }
+
+    // Derive nix mode
+    const nixConfig = config?.nix;
+    const nixMode = resolveNixMode(build.repoPath, nixConfig);
+
+    // Derive mode
+    const mode = build.repoUrl === build.repoPath ? "local" : "clone";
+
+    return {
+      repoUrl: build.repoUrl || "",
+      repoPath: build.repoPath || "",
+      specPath: build.specPath || null,
+      mode,
+      projectDir: config?.project_dir || ".",
+      model: config?.model || "unknown",
+      nixMode,
+      taskCount: cache?.taskIds.length || 0,
+      workflow: workflowSummary,
+      gitEnabled: config?.git?.enabled ?? false,
+      budgetGlobal: config?.budget ? {
+        max_iterations: config.budget.max_iterations || 0,
+        max_cost: config.budget.max_cost || 0,
+      } : null,
+    };
+  } catch {
+    // Fallback: return minimal metadata from BuildInfo directly
+    return {
+      repoUrl: build.repoUrl || "",
+      repoPath: build.repoPath || "",
+      specPath: build.specPath || null,
+      mode: build.repoUrl === build.repoPath ? "local" : "clone",
+      projectDir: ".",
+      model: "unknown",
+      nixMode: "none",
+      taskCount: 0,
+      workflow: "",
+      gitEnabled: false,
+      budgetGlobal: null,
+    };
   }
-
-  // Derive nix mode
-  const nixConfig = config?.nix;
-  const nixMode = resolveNixMode(build.repoPath, nixConfig);
-
-  // Derive mode
-  const mode = build.repoUrl === build.repoPath ? "local" : "clone";
-
-  return {
-    repoUrl: build.repoUrl,
-    repoPath: build.repoPath,
-    specPath: build.specPath || null,
-    mode,
-    projectDir: config?.project_dir || ".",
-    model: config?.model || "unknown",
-    nixMode,
-    taskCount: cache?.taskIds.length || 0,
-    workflow: workflowSummary,
-    gitEnabled: config?.git?.enabled ?? false,
-    budgetGlobal: config?.budget ? {
-      max_iterations: config.budget.max_iterations || 0,
-      max_cost: config.budget.max_cost || 0,
-    } : null,
-  };
 }
 
 function enrichState(state: Record<string, unknown>, build: BuildInfo): Record<string, unknown> {
