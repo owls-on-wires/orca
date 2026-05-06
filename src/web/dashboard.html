@@ -264,8 +264,8 @@ a:hover { text-decoration: underline; }
 }
 .intervention-note:focus { outline: none; border-color: var(--cyan); }
 
-/* Conn indicator */
-.conn { position: fixed; top: 8px; right: 8px; font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; z-index: 10; }
+/* Conn indicator — fixed bottom footer */
+.conn { position: fixed; bottom: 0; left: 0; right: 0; height: 24px; background: var(--surface); border-top: 1px solid var(--border); font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; padding: 0 12px; z-index: 10; }
 .conn-dot { width: 6px; height: 6px; border-radius: 50%; }
 .conn-dot.ok { background: var(--green); }
 .conn-dot.err { background: var(--red); }
@@ -608,17 +608,31 @@ function fetchBuildDetail(id) {
 function connectSSE(id) {
   var connDot = document.getElementById('conn-dot');
   var connText = document.getElementById('conn-text');
+  var lastEventTime = Date.now();
+  var reconnectTimer = null;
 
   eventSource = new EventSource('/builds/' + id + '/events');
 
-  eventSource.onopen = function() {
+  function markLive() {
+    lastEventTime = Date.now();
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     connDot.className = 'conn-dot ok';
     connText.textContent = 'live';
+  }
+
+  eventSource.onopen = function() {
+    markLive();
   };
 
   eventSource.onerror = function() {
-    connDot.className = 'conn-dot err';
-    connText.textContent = 'reconnecting';
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(function() {
+      if (Date.now() - lastEventTime >= 3000) {
+        connDot.className = 'conn-dot err';
+        connText.textContent = 'reconnecting';
+      }
+      reconnectTimer = null;
+    }, 3000);
   };
 
   eventSource.addEventListener('status', function(e) {

@@ -396,3 +396,50 @@
       - "Include _buildMeta in GET /builds list responses"
       - "Render metadata on build list cards (path, model, nix)"
       - "Render full metadata section in detail header"
+
+- id: build_list_filters
+  title: "Status filter checkboxes on build list view"
+  tags: [ui]
+  depends_on: []
+  budget:
+    max_iterations: 5
+    max_cost: 15.0
+  variables:
+    description: >
+      The build list view shows all builds with no way to filter. Add status
+      filter checkboxes above the build list.
+
+      Add a row of checkboxes between the page header and the build cards:
+        [x] Running  [x] Completed  [x] Failed  [x] Cloning
+
+      All checked by default. Unchecking a status hides builds with that status.
+      The filter is purely client-side — renderBuildList() already receives the
+      full builds array, just filter before rendering.
+
+      Implementation in dashboard.html:
+
+      1. Add a filter bar div above the build-list div with styled checkboxes.
+         Use the existing status colors for the checkbox labels:
+         - Running: var(--cyan)
+         - Completed: var(--green)
+         - Failed: var(--red)
+         - Cloning: var(--yellow)
+
+      2. Each checkbox has an onchange handler that calls renderBuildList()
+         with the last-fetched builds array (store it in a variable).
+
+      3. In renderBuildList(), filter the builds array by checking which
+         status checkboxes are checked before rendering cards.
+
+      4. Show a count next to each label: "Running (2)" so users can see
+         the distribution at a glance without scrolling.
+
+      5. Style the filter bar compactly — inline checkboxes with small text,
+         matching the topbar aesthetic. Use accent-color for the checkbox
+         tint to match status colors.
+    develop_focus:
+      - "Add filter bar with status checkboxes above build list"
+      - "Store last-fetched builds array for re-filtering"
+      - "Filter builds in renderBuildList() based on checked statuses"
+      - "Show count per status next to each label"
+      - "Style checkboxes with status colors"
