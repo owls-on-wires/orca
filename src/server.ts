@@ -264,19 +264,32 @@ function watchBuildState(build: BuildInfo) {
 
   tryWatch();
 
-  // If .orca dir doesn't exist yet, poll for it
-  if (!build.stateWatcher) {
-    const interval = setInterval(() => {
-      if (existsSync(orcaDir)) {
-        tryWatch();
-        clearInterval(interval);
+  // Poll as fallback — recursive fs.watch is unreliable on Linux.
+  // Also covers the case where .orca dir doesn't exist yet.
+  let lastStateJson = "";
+  const pollInterval = setInterval(() => {
+    if (build.status === "completed" || build.status === "failed") {
+      clearInterval(pollInterval);
+      return;
+    }
+
+    // If watcher hasn't started yet, try again
+    if (!build.stateWatcher && existsSync(orcaDir)) {
+      tryWatch();
+    }
+
+    // Poll state from disk
+    const state = readStateFromDisk(build);
+    if (state) {
+      const json = JSON.stringify(state);
+      if (json !== lastStateJson) {
+        lastStateJson = json;
+        enrichState(state, build);
+        build.lastState = state;
+        broadcastSSE(build, "state", { buildId: build.id, state });
       }
-      // Stop polling if build is done
-      if (build.status === "completed" || build.status === "failed") {
-        clearInterval(interval);
-      }
-    }, 1000);
-  }
+    }
+  }, 2000);
 }
 
 function loadNixConfig(specPath: string | null): NixConfig | undefined {
