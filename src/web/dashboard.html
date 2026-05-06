@@ -198,6 +198,17 @@ a:hover { text-decoration: underline; }
 .stage-name { min-width: 80px; }
 .stage-name.active { color: var(--yellow); font-weight: 600; }
 
+/* Eval results */
+.eval-summary { font-size: 11px; font-weight: 600; }
+.eval-summary.pass { color: var(--green); }
+.eval-summary.partial { color: var(--yellow); }
+.eval-summary.fail { color: var(--red); }
+.eval-failed-tests { padding: 4px 16px 10px 42px; display: none; }
+.eval-failed-tests.open { display: block; }
+.eval-failed-tests .fail-item { font-size: 11px; color: var(--red); opacity: 0.7; padding: 1px 0; }
+.eval-failed-toggle { font-size: 10px; color: var(--text-dim); cursor: pointer; margin-left: 8px; }
+.eval-failed-toggle:hover { color: var(--text); }
+
 /* Expandable task history */
 .task-header.expandable { cursor: pointer; user-select: none; }
 .task-header.expandable:hover { background: rgba(255,255,255,0.02); }
@@ -731,6 +742,43 @@ function sendIntervention(id, action) {
 }
 
 var expandedTasks = {};
+var expandedEvalFailed = {};
+
+function toggleEvalFailed(taskId) {
+  expandedEvalFailed[taskId] = !expandedEvalFailed[taskId];
+  renderDetail();
+}
+
+function renderEvalSummary(evalResult) {
+  if (!evalResult) return '';
+  if (evalResult.compile_error) {
+    return '<span class="eval-summary fail">COMPILE ERROR</span>';
+  }
+  if (evalResult.total != null && evalResult.passed != null) {
+    var cls = evalResult.all_passed ? 'pass' : (evalResult.passed === 0 ? 'fail' : 'partial');
+    return '<span class="eval-summary ' + cls + '">' + evalResult.passed + '/' + evalResult.total + ' passing</span>';
+  }
+  return '';
+}
+
+function renderEvalFailedTests(taskId, evalResult) {
+  if (!evalResult || !evalResult.failed_tests || evalResult.failed_tests.length === 0) return '';
+  var isOpen = expandedEvalFailed[taskId];
+  var html = '<span class="eval-failed-toggle" onclick="event.stopPropagation();toggleEvalFailed(\'' + esc(taskId) + '\')">';
+  html += (isOpen ? '&#9662;' : '&#9656;') + ' ' + evalResult.failed_tests.length + ' failed</span>';
+  return html;
+}
+
+function renderEvalFailedList(taskId, evalResult) {
+  if (!evalResult || !evalResult.failed_tests || evalResult.failed_tests.length === 0) return '';
+  var isOpen = expandedEvalFailed[taskId];
+  var html = '<div class="eval-failed-tests' + (isOpen ? ' open' : '') + '">';
+  evalResult.failed_tests.forEach(function(name) {
+    html += '<div class="fail-item">' + esc(name) + '</div>';
+  });
+  html += '</div>';
+  return html;
+}
 
 function taskIcon(status) {
   var icons = {
@@ -797,10 +845,14 @@ function renderTaskHistory(t, state) {
     var iterCost = 0;
     var lastSummary = '';
 
+    var stageSummaries = {};
     records.forEach(function(r) {
       completedStages[r.label] = true;
       iterCost += r.costUsd || 0;
-      if (r.summary) lastSummary = r.summary;
+      if (r.summary) {
+        lastSummary = r.summary;
+        stageSummaries[r.label] = r.summary;
+      }
     });
 
     html += '<div class="iter-row' + (isCurrent ? ' current' : '') + '">';
@@ -810,6 +862,23 @@ function renderTaskHistory(t, state) {
       var dotClass = 'pending';
       if (completedStages[s]) {
         dotClass = 'done';
+        // Color eval stage dots based on pass/fail from summary
+        if (s === 'eval' && stageSummaries[s]) {
+          var sum = stageSummaries[s];
+          if (sum.indexOf('Compile error') !== -1 || sum.indexOf('0/') === 0) {
+            dotClass = 'failed';
+          } else if (sum.indexOf('All ') === 0 && sum.indexOf('passing') !== -1) {
+            dotClass = 'done';
+          } else if (sum.indexOf('passing') !== -1) {
+            // Partial pass — check if all pass
+            var match = sum.match(/^(\d+)\/(\d+)/);
+            if (match && match[1] === match[2]) {
+              dotClass = 'done';
+            } else {
+              dotClass = 'failed';
+            }
+          }
+        }
       } else if (isCurrent && t.currentStage === s && t.status === 'running') {
         dotClass = 'active';
       } else if (t.status === 'failed' && isCurrent && t.currentStage === s) {
@@ -932,6 +1001,7 @@ function renderDetail() {
 
   // Task list — show all tasks from _pendingTasks, with pending state for unstarted ones
   var taskIds = state._pendingTasks || Object.keys(tasks);
+  var evalResults = state._evalResults || {};
   if (taskIds.length > 0) {
     taskIds.forEach(function(id) {
       var t = tasks[id];
@@ -939,6 +1009,7 @@ function renderDetail() {
       var isActive = state.currentTaskId === id;
       var hasHistory = t && t.history && t.history.length > 0;
       var isExpanded = expandedTasks[id];
+      var evalResult = evalResults[id];
 
       html += '<div class="task-card' + (isActive ? ' active' : '') + '">';
 
@@ -950,6 +1021,10 @@ function renderDetail() {
       html += taskIcon(taskStatus);
       html += '<span class="task-name">' + esc(id) + '</span>';
       html += '<span class="task-meta">';
+      if (evalResult) {
+        html += renderEvalSummary(evalResult);
+        html += renderEvalFailedTests(id, evalResult);
+      }
       if (t && (taskStatus === 'running' || taskStatus === 'failed' || taskStatus === 'completed')) {
         html += '<span>iter ' + (t.iteration || 0) + '/' + (t.maxIterations || '?') + '</span>';
       }
@@ -957,6 +1032,11 @@ function renderDetail() {
       if (t && t.currentStage) html += '<span>' + esc(t.currentStage) + '</span>';
       if (t && t.stopReason) html += '<span style="color:var(--red)">' + esc(t.stopReason).substring(0, 60) + '</span>';
       html += '</span></div>';
+
+      // Collapsed failed tests list
+      if (evalResult) {
+        html += renderEvalFailedList(id, evalResult);
+      }
 
       // Expandable iteration history
       if (hasHistory) {
