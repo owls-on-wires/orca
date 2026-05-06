@@ -268,6 +268,25 @@ a:hover { text-decoration: underline; }
 .log-entry.stderr { color: var(--red); opacity: 0.8; }
 .log-entry.status { color: var(--cyan); }
 .log-entry.state { color: var(--yellow); }
+.log-entry.tool { color: var(--cyan); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-entry.start { color: var(--green); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-entry.end { color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-entry .ts { color: var(--text-dim); opacity: 0.5; margin-right: 8px; }
+.log-tab-bar { display: flex; gap: 0; }
+.log-tab {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+}
+.log-tab:hover { color: var(--text); }
+.log-tab.active { color: var(--cyan); border-bottom: 2px solid var(--cyan); }
 
 /* Intervention banner */
 .intervention-banner {
@@ -743,6 +762,7 @@ function sendIntervention(id, action) {
 
 var expandedTasks = {};
 var expandedEvalFailed = {};
+var activeLogTab = 'activity'; // 'activity' or 'raw'
 
 function toggleEvalFailed(taskId) {
   expandedEvalFailed[taskId] = !expandedEvalFailed[taskId];
@@ -893,6 +913,46 @@ function renderTaskHistory(t, state) {
   });
 
   html += '</div>';
+  return html;
+}
+
+function switchLogTab(tab) {
+  activeLogTab = tab;
+  renderDetail();
+}
+
+function renderActivityLog(entries) {
+  var html = '';
+  entries.forEach(function(e) {
+    if (!e) return;
+    var ts = e.timestamp ? e.timestamp.split('T')[1]?.substring(0, 8) || '' : '';
+    var cls = 'log-entry';
+    var text = '';
+
+    if (e.event_type === 'invoke_start') {
+      cls += ' start';
+      text = '\u25B6 ' + (e.label || 'invoke') + ' started' + (e.model ? ' (' + e.model + ')' : '');
+    } else if (e.event_type === 'invoke_end') {
+      cls += ' end';
+      text = '\u25A0 ' + (e.label || 'invoke') + ' done \u2014 ' + (e.num_turns || 0) + ' turns, $' + (e.cost_usd || 0).toFixed(2) + ', ' + fmtDuration((e.duration_ms || 0) / 1000);
+    } else if (e.event_type === 'tool_use') {
+      cls += ' tool';
+      var name = e.tool_name || '?';
+      var input = e.tool_input || {};
+      var detail = '';
+      if (name === 'Read') detail = input.file_path || '';
+      else if (name === 'Write' || name === 'Edit') detail = input.file_path || '';
+      else if (name === 'Bash') detail = (input.command || '').substring(0, 80);
+      else if (name === 'Grep') detail = (input.pattern || '') + ' ' + (input.path || '');
+      else if (name === 'Glob') detail = input.pattern || '';
+      else detail = JSON.stringify(input).substring(0, 60);
+      text = '\u2022 ' + name + ' ' + detail;
+    } else {
+      return;
+    }
+
+    html += '<div class="' + cls + '"><span class="ts">' + esc(ts) + '</span>' + esc(text) + '</div>';
+  });
   return html;
 }
 
@@ -1077,14 +1137,36 @@ function renderDetail() {
   }
 
   // Log viewer
+  var recentLog = state._recentLog || [];
+  var hasActivity = recentLog.length > 0;
+  var showTab = hasActivity ? activeLogTab : 'raw';
+
   html += '<div class="log-panel">';
-  html += '<div class="log-panel-header"><span>Output Log</span><span>' + buildLogs.length + ' entries</span></div>';
+  html += '<div class="log-panel-header">';
+  if (hasActivity) {
+    html += '<div class="log-tab-bar">';
+    html += '<button class="log-tab' + (showTab === 'activity' ? ' active' : '') + '" onclick="switchLogTab(\'activity\')">Activity</button>';
+    html += '<button class="log-tab' + (showTab === 'raw' ? ' active' : '') + '" onclick="switchLogTab(\'raw\')">Raw Output</button>';
+    html += '</div>';
+  } else {
+    html += '<span>Output Log</span>';
+  }
+  var entryCount = showTab === 'activity' ? recentLog.length : buildLogs.length;
+  html += '<span>' + entryCount + ' entries</span>';
+  html += '</div>';
+
   html += '<div class="log-body" id="detail-log-body">';
-  // Show last 200 log entries
-  var visibleLogs = buildLogs.slice(-200);
-  visibleLogs.forEach(function(entry) {
-    html += '<div class="log-entry ' + esc(entry.type) + '">' + esc(entry.text) + '</div>';
-  });
+  if (showTab === 'activity' && hasActivity) {
+    html += renderActivityLog(recentLog);
+  } else {
+    var visibleLogs = buildLogs.slice(-200);
+    visibleLogs.forEach(function(entry) {
+      html += '<div class="log-entry ' + esc(entry.type) + '">' + esc(entry.text) + '</div>';
+    });
+  }
+  if (!hasActivity && buildLogs.length === 0) {
+    html += '<div class="log-entry" style="padding:16px;opacity:0.4">Waiting for activity...</div>';
+  }
   html += '</div></div>';
 
   document.getElementById('detail-content').innerHTML = html;
