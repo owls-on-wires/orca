@@ -1,881 +1,394 @@
-- id: move_monitor_html
-  title: "Move monitor.html out of templates/"
-  tags: [cleanup]
+# ---------------------------------------------------------------------------
+# Web UI Observability Rework
+# ---------------------------------------------------------------------------
+#
+# Goal: surface the structured data orca already persists (state.json,
+# history[], eval_result.json, JSONL logs) in the dashboard detail view.
+# Currently the detail view is a raw stdout dump with progress bars.
+#
+# All tasks target src/server.ts and src/web/dashboard.html unless noted.
+# ---------------------------------------------------------------------------
+
+- id: explicit_build_mode
+  title: "Require explicit mode flag for POST /builds"
+  tags: [api, backend]
   depends_on: []
   budget:
     max_iterations: 6
     max_cost: 20.0
   eval:
-    command: "test -f src/web/monitor.html && ! test -f templates/monitor.html && grep -q 'web/monitor.html' src/display/web.ts && bun test 2>&1"
+    command: >-
+      grep -q 'mode.*clone\|mode.*dir\|"clone"\|"local"' src/server.ts &&
+      bun test 2>&1
+    parser: exit_code
+    timeout: 120
+  variables:
+    description: >
+      POST /builds currently accepts either `repo` (clone mode) or `dir` (local
+      directory mode) and infers the mode from which field is present. This is
+      ambiguous — the consumer should explicitly declare intent.
+
+      Change the API contract:
+
+      Required field:
+        mode: "clone" | "local"
+
+      When mode is "clone":
+        - `repo` (string, required): git URL or path to clone from
+        - Clones into {dataDir}/builds/{name}/repo as before
+        - Returns 400 if `repo` is missing
+
+      When mode is "local":
+        - `dir` (string, required): absolute path to existing project directory
+        - Uses directory in-place, no clone
+        - Returns 400 if `dir` is missing or doesn't exist
+
+      When mode is missing:
+        - Return 400: { error: "Missing required field: mode (\"clone\" or \"local\")" }
+
+      When mode is an unrecognized value:
+        - Return 400: { error: "Invalid mode: must be \"clone\" or \"local\"" }
+
+      If both `repo` and `dir` are provided (regardless of mode), return 400
+      to prevent confusion.
+
+      Update the dashboard.html create build form to include a mode selector
+      (radio buttons: "Clone repository" / "Local directory") and send the
+      correct mode field. The repo URL input should show when clone is selected,
+      a directory path input when local is selected.
+
+      Update the help text printed on server startup to reflect the new API.
+    develop_focus:
+      - "Add mode field validation in POST /builds handler"
+      - "Return 400 with clear error when mode is missing or invalid"
+      - "Reject requests with both repo and dir set"
+      - "Update dashboard.html form with mode radio selector"
+      - "Update server startup help text"
+
+- id: conn_indicator_fix
+  title: "Fix connection status indicator and reconnect flicker"
+  tags: [bugfix, ui]
+  depends_on: []
+  budget:
+    max_iterations: 5
+    max_cost: 15.0
+  eval:
+    command: >-
+      grep -q 'footer\|bottom' src/web/dashboard.html &&
+      ! grep -q 'top: 8px' src/web/dashboard.html &&
+      bun test 2>&1
     parser: exit_code
     timeout: 60
   variables:
     description: >
-      Move templates/monitor.html to src/web/monitor.html. Create the src/web/
-      directory. Update the import in src/display/web.ts to reference the new
-      location. The templates/ directory should only contain YAML starter configs.
+      Two bugs in dashboard.html:
 
-      The import in web.ts currently reads:
-        import monitorHtml from "../../templates/monitor.html" with { type: "text" };
-      Change it to:
-        import monitorHtml from "../web/monitor.html" with { type: "text" };
+      1. The connection status indicator (.conn) is positioned fixed at top-right
+         (top: 8px, right: 8px) and overlaps the "New Build" button in the topbar.
+         Move it to a small fixed footer bar at the bottom of the viewport.
 
-      The file is embedded into the compiled binary via Bun's static import, so
-      no runtime path resolution is needed — just fix the import path.
+      2. The indicator flashes "reconnecting" every few seconds. This happens because
+         the SSE EventSource fires onerror on each reconnect cycle even when the
+         connection is healthy. The fix: only show "reconnecting" after a sustained
+         disconnect (e.g., 3+ seconds without a successful event), not on every
+         transient onerror. Track a lastEventTime and use a debounce.
+
+      Both fixes are purely in src/web/dashboard.html CSS and JS.
     develop_focus:
-      - "Create src/web/ directory"
-      - "Move templates/monitor.html to src/web/monitor.html"
-      - "Update the import path in src/display/web.ts"
-      - "Verify no other files reference templates/monitor.html"
+      - "Move .conn to a fixed bottom footer"
+      - "Debounce reconnecting state — only show after sustained disconnect"
 
-- id: stage_summaries
-  title: "Add eval summary generation and ensure all schemas have summary"
-  tags: [feature]
-  depends_on: [move_monitor_html]
-  budget:
-    max_iterations: 10
-    max_cost: 40.0
-  eval:
-    command: >-
-      grep -q '"summary"' src/prompts/analyze.schema.json &&
-      grep -q '"summary"' src/prompts/supervisor.schema.json &&
-      grep -q 'evalSummary' src/engine/eval.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
-  variables:
-    description: >
-      Add a "summary" field to the structured output schemas that don't have one
-      yet, and add an evalSummary() function for auto-generating summaries from
-      eval results.
-
-      Current state:
-      - develop.schema.json ALREADY has a "summary" field — do not modify it.
-      - analyze.schema.json does NOT have a summary field — add one.
-      - supervisor.schema.json does NOT have a summary field — add one.
-      - StageRecord in src/state/index.ts ALREADY has a summary field.
-
-      Changes needed:
-      1. Add "summary" (string, required) to src/prompts/analyze.schema.json
-         Description: "1-2 sentence summary of the analysis findings."
-      2. Add "summary" (string, required) to src/prompts/supervisor.schema.json
-         Description: "1-2 sentence summary of the supervisor's decision."
-      3. Add an exported function evalSummary(result: EvalResult): string in
-         src/engine/eval.ts that generates a human-readable summary:
-         - All passed: "All N tests passing."
-         - Some failed: "M/N tests passing. Failures: test_a, test_b."
-         - Compile error: "Compile error." (+ first compile error if available)
-         - No tests: "No tests found."
-      4. Write tests for evalSummary in src/engine/eval.test.ts
-    develop_focus:
-      - "Add summary field to analyze.schema.json and supervisor.schema.json"
-      - "Write evalSummary() function in eval.ts"
-      - "Write unit tests for evalSummary in eval.test.ts"
-
-- id: monitor_cli_flag
-  title: "Add --monitor flag to build command"
-  tags: [feature]
+- id: server_state_enrichment
+  title: "Inject task list, workflow, and JSONL events into server state"
+  tags: [backend, core]
   depends_on: []
   budget:
     max_iterations: 8
     max_cost: 30.0
   eval:
     command: >-
-      grep -qF -- '--monitor' src/cli.ts &&
+      grep -q '_pendingTasks\|_totalTasks' src/server.ts &&
+      grep -q '_workflow' src/server.ts &&
+      grep -q '_recentLog\|readRecentLog\|jsonl' src/server.ts &&
+      grep -q '_evalResult\|eval_result' src/server.ts &&
       bun test 2>&1
     parser: exit_code
     timeout: 120
   variables:
     description: >
-      Add a --monitor flag to the 'orca build' command. When present, start the
-      web monitor server (from src/display/web.ts) in the same process as the
-      build, before calling runBuild().
+      The monitor (src/display/web.ts) enriches state.json before pushing it
+      to clients — it injects _pendingTasks, _totalTasks, _workflow, _recentLog,
+      and _intervention. The server (src/server.ts) does none of this. It reads
+      state.json raw and pushes it as-is via SSE. This means the dashboard has
+      no task list, no workflow info, and no activity log.
 
-      Both the HTTP server and the build loop are async — Bun handles them
-      concurrently. The monitor dies when the build process exits.
+      Replicate the enrichment logic from web.ts in server.ts. When the server
+      reads a build's state.json (in the file watcher callback and in
+      GET /builds/:id), enrich it:
 
-      If the user wants a persistent monitor that survives the build, they use
-      'orca monitor' as a separate process (existing behavior, unchanged).
+      1. Read the build's orca config (project.orca.yaml in the repo dir).
+         Use loadTasks() to get the full ordered task list. Inject:
+         - _pendingTasks: string[] (all task IDs in execution order)
+         - _totalTasks: number
+         - _workflow: WorkflowConfig (pre/loop/post stage names)
 
-      Changes needed:
-      1. In src/cli.ts cmdBuild(), detect --monitor in args
-      2. If present, import and call startWebMonitor(configPath) before runBuild()
-         — do NOT await it (it never resolves, it runs the server forever)
-      3. Make sure --monitor is stripped from args before other flag parsing
-      4. If --monitor and --detach are both present, print error and exit
-         (incompatible — detach runs in background, monitor needs foreground)
-      5. Update the help text in printUsage() to include --monitor
-      6. Add tests in src/cli.test.ts for the new flag
+      2. Read the JSONL log for the current task's current stage.
+         Path: {repoDir}/.orca/tasks/{currentTaskId}/{currentStage}.jsonl
+         Parse the last 30 lines. Inject as _recentLog: object[].
+         Copy the readRecentLog() function from web.ts.
+
+      3. Read eval_result.json for each task that has one.
+         Path: {repoDir}/.orca/tasks/{taskId}/eval_result.json
+         Inject as _evalResults: Record<string, EvalResult> keyed by taskId.
+
+      4. Check for intervention.json (already partially done for the SSE
+         intervention event — make sure it's also in the state payload).
+
+      Cache the parsed config per build (it doesn't change during a build).
+      The JSONL and eval files should be re-read on each state update since
+      they change frequently.
     develop_focus:
-      - "Add --monitor flag detection in cmdBuild()"
-      - "Call startWebMonitor() without awaiting before runBuild()"
-      - "Update printUsage() help text"
-      - "Make --monitor and --detach mutually exclusive with error message"
-      - "Add cli tests for the new flag"
+      - "Parse and cache build config per build (loadTasks, workflow)"
+      - "Inject _pendingTasks, _totalTasks, _workflow into state"
+      - "Port readRecentLog() from web.ts, inject _recentLog"
+      - "Read eval_result.json per task, inject _evalResults"
+      - "Ensure intervention.json is included in state payload"
 
-- id: live_task_queue
-  title: "Live task queue with file re-reading"
-  tags: [feature, core]
-  depends_on: [monitor_cli_flag]
+- id: task_list_and_history
+  title: "Show all tasks with expandable stage history"
+  tags: [ui, core]
+  depends_on: [server_state_enrichment]
   budget:
-    max_iterations: 12
-    max_cost: 60.0
+    max_iterations: 10
+    max_cost: 40.0
   stages:
     develop:
       max_turns: 200
   eval:
     command: >-
-      grep -q 'checkForNewTasks\|seenIds\|taskQueue' src/engine/loop.ts &&
+      grep -q '_pendingTasks\|pendingTasks' src/web/dashboard.html &&
+      grep -q 'history\|stage-history\|stageHistory' src/web/dashboard.html &&
+      grep -q 'expandable\|collapse\|toggle' src/web/dashboard.html &&
       bun test 2>&1
     parser: exit_code
     timeout: 120
   variables:
     description: >
-      Restructure the main task loop in src/engine/loop.ts from a fixed task
-      array to a mutable queue that re-reads the task file at task boundaries.
+      Rework the task list in the dashboard detail view. Currently it only shows
+      tasks that have entered state.tasks (i.e., already started). Pending tasks
+      are invisible. And for started tasks, only the current iteration/cost is
+      shown — no history.
 
-      Current behavior: tasks are loaded once and passed as a fixed array to
-      runBuild(). The function iterates through them and exits when done.
+      Changes to the renderDetail() function in dashboard.html:
 
-      Target behavior: after each task completes, re-read the task file from
-      disk, diff against completed/queued task IDs, and append any new tasks
-      to the queue. This allows tasks to be added mid-build by humans, Claude
-      sessions, or planner agents — no restart required.
+      1. Use state._pendingTasks (injected by server) to render ALL tasks in
+         execution order. Tasks not yet in state.tasks render as pending (dimmed,
+         empty circle icon). This is the same pattern monitor.html already uses.
 
-      Implementation:
-      1. Change the main task iteration in runBuild() from for...of to a while
-         loop with a mutable array (taskQueue).
-      2. Track completedIds (Set<string>) and seenIds (Set<string>).
-      3. After each task completes, call a new checkForNewTasks() function that:
-         a. Re-reads and re-resolves the task file via loadTasks()
-         b. Filters out tasks already in seenIds or completedIds
-         c. Validates dependencies of new tasks
-         d. Appends new tasks to taskQueue
-         e. Logs "Found N new tasks: [ids]" via display
-      4. When selecting the next task, find the first task in the queue whose
-         depends_on are all in completedIds. If none are eligible, break.
-      5. At build end, if any tasks remain in the queue (blocked by failed
-         deps), report them.
+      2. For each task that has history (state.tasks[id].history[]), add an
+         expandable section below the task header. Clicking the task card toggles
+         it open/closed.
 
-      The LoopOptions interface needs a new field so checkForNewTasks can
-      reload the file:
-        configPath: string  (already exists)
+      3. The expanded section shows iteration history grouped by iteration number:
+         - Each iteration is a row with: "Iter N" label, stage dots (like the
+           monitor's stage-row), total cost for that iteration, summary text
+           from the last stage in that iteration.
+         - Use the existing stage-dot CSS classes (done/active/pending/failed).
+         - The current iteration is always visible (not collapsed).
+         - Previous iterations are collapsed by default.
 
-      checkForNewTasks needs access to the config and configPath to call
-      loadTasks(config, configPath).
+      4. Show the workflow stages (from _workflow) as column headers for the
+         stage dots, so users understand the pre → loop → post progression.
 
-      Edge cases:
-      - Duplicate task ID → skip (already in seenIds)
-      - New task depends on failed task → stays in queue, reported at end
-      - Task removed from file → ignore, never remove from queue
-      - File read error during check → log warning, continue with existing queue
-
-      State changes:
-      - Add tasksDiscovered to BuildState — record of {taskId, discoveredAt}
-        for each task, so the web UI can show when tasks were added.
-      - Update state.json after discovering new tasks.
+      Keep the existing progress bars for the active task. They should appear
+      below the history section.
     develop_focus:
-      - "Restructure runBuild() task iteration to queue-based while loop"
-      - "Implement checkForNewTasks() with file re-reading and diffing"
-      - "Add tasksDiscovered tracking to BuildState"
-      - "Handle edge cases: duplicates, blocked tasks, file errors"
-      - "Report blocked tasks at build end"
-      - "Write tests in a new or existing test file"
+      - "Render all tasks from _pendingTasks with pending state for unstarted ones"
+      - "Add click-to-expand on task cards"
+      - "Render iteration history grouped by iteration number"
+      - "Show stage dots per iteration using workflow stage names"
+      - "Keep progress bars for active task"
 
-# ---------------------------------------------------------------------------
-# Service Mode
-# ---------------------------------------------------------------------------
-
-- id: serve_command
-  title: "Add orca serve command with REST API + SSE"
-  tags: [service, core]
-  depends_on: [live_task_queue]
+- id: build_summary_stats
+  title: "Compute and display aggregate build stats in header"
+  tags: [ui]
+  depends_on: [server_state_enrichment]
   budget:
-    max_iterations: 15
-    max_cost: 80.0
-  stages:
-    develop:
-      max_turns: 200
+    max_iterations: 6
+    max_cost: 20.0
   eval:
     command: >-
-      grep -q 'case "serve"' src/cli.ts &&
-      test -f src/server.ts &&
+      grep -q 'avgIter\|avg.*iter\|averageIter' src/web/dashboard.html &&
+      grep -q 'stageCost\|stage-cost\|per.*stage' src/web/dashboard.html &&
       bun test 2>&1
     parser: exit_code
-    timeout: 120
+    timeout: 60
   variables:
     description: >
-      Add a long-running `orca serve` command. The serve process starts an
-      HTTP server on port 7070 (configurable via --port). It manages multiple
-      concurrent builds, each as a child process.
+      The build header currently shows: status, total cost, elapsed, tasks X/Y.
+      Add computed summary stats derived from state.tasks and history[]. All
+      computation is client-side in dashboard.html — no server changes needed.
 
-      Uses REST for commands and Server-Sent Events (SSE) for streaming.
-      REST is simpler than WebSockets — commands are naturally request/response,
-      endpoints are curl-testable, and auth middleware works out of the box.
-      SSE handles the streaming side (state updates, logs) over a single
-      long-lived GET connection.
+      Add a second row to the detail-summary div with:
 
-      The serve process does NOT enter any nix environment itself. When it
-      receives a build request, it:
-      1. Clones the repo to {data_dir}/builds/{name}/repo
-      2. Writes the spec to disk if provided inline
-      3. Spawns the build as a child process (with nix wrapper if configured)
-      4. Watches .orca/state.json in the repo directory for state changes
-      5. Streams state updates to SSE clients
+      1. Tasks failed count (only if > 0, red)
+      2. Total iterations across all tasks (sum of task.iteration)
+      3. Average iterations per completed task (total iters / completed count)
+      4. Cost rate: totalCostUsd / elapsed minutes, displayed as "$/min"
+      5. Per-stage cost breakdown: aggregate costUsd from all history[] entries
+         grouped by stage label. Display as compact pills, e.g.:
+         "develop $12.40 | eval $0.80 | understand $2.10"
 
-      The serve process tracks active builds in memory (Map<buildId, BuildInfo>).
-      BuildInfo contains: child process handle, repo path, config, SSE clients.
-
-      Key behaviors:
-      - Multiple builds can run concurrently (different repos or same repo)
-      - The serve process survives individual build failures
-      - Child process stdout/stderr is captured and available via SSE
-      - SIGTERM causes graceful shutdown: SIGTERM all children, wait, exit
-
-      New files:
-      - src/server.ts — HTTP server, build lifecycle management
-      - Add "serve" case to the switch in src/cli.ts main()
-
-      The server should use Bun.serve() (same as display/web.ts does currently).
-      Accept --data-dir flag for where to store cloned repos and build state.
-      Default data dir: ./data or /data if running as root.
+      These stats update on every render() call since the state is live.
+      Use the existing .summary CSS class and .val spans for consistent styling.
+      The per-stage breakdown should use smaller text (11px) on its own line.
     develop_focus:
-      - "Create src/server.ts with Bun.serve() HTTP server"
-      - "Add serve command to cli.ts switch statement"
-      - "Implement build lifecycle: clone → spawn → watch → stream"
-      - "Track active builds in memory with Map<buildId, BuildInfo>"
-      - "Handle graceful shutdown on SIGTERM"
-      - "Write tests for server startup and build spawning"
+      - "Compute total/average iterations from state.tasks"
+      - "Compute cost rate from totalCostUsd and elapsed time"
+      - "Aggregate history[] entries by stage label for per-stage costs"
+      - "Render stats in the detail header using existing CSS patterns"
 
-- id: rest_api
-  title: "REST API endpoints"
-  tags: [service, core]
-  depends_on: [serve_command]
-  budget:
-    max_iterations: 12
-    max_cost: 60.0
-  stages:
-    develop:
-      max_turns: 200
-  eval:
-    command: >-
-      grep -q 'POST.*builds\|DELETE.*builds\|GET.*builds' src/server.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
-  variables:
-    description: >
-      Implement REST API endpoints and SSE streaming in src/server.ts.
-
-      REST endpoints (commands — request/response):
-
-      POST /api/builds
-        Body: { repo, branch?, spec?, spec_path? }
-        Clone repo, write spec if inline, spawn orca run. Returns buildId.
-        Response: { buildId, status: "started" }
-
-      GET /api/builds
-        List all builds with summary status.
-        Response: { builds: [{ buildId, name, status, cost, ... }] }
-
-      GET /api/builds/:id
-        Get full state for a single build.
-        Response: BuildState
-
-      DELETE /api/builds/:id
-        Send SIGTERM to the build's child process.
-        Response: { status: "aborted" }
-
-      POST /api/builds/:id/intervene
-        Body: { action: "continue"|"skip"|"abort", note? }
-        Write intervention_response.json to .orca/ directory.
-        Existing polling in intervention/index.ts picks it up.
-        Response: { status: "ok" }
-
-      SSE endpoint (streaming — long-lived GET):
-
-      GET /api/builds/:id/events
-        Server-Sent Events stream for a single build. Events:
-        - event: state — full BuildState on each state.json change
-        - event: log — log line from child process stdout/stderr
-        - event: intervention — intervention.json appeared, human input needed
-        Content-Type: text/event-stream
-
-      GET /api/events
-        SSE stream for all builds. Same event types, with buildId in data.
-
-      Implementation notes:
-      - SSE is just a long-lived HTTP response with Content-Type text/event-stream.
-        Bun.serve supports streaming responses via ReadableStream.
-      - State watching uses fs.watch + polling fallback (same pattern as
-        display/web.ts), generalized for multiple builds.
-      - All endpoints return JSON with appropriate status codes.
-      - Invalid buildId returns 404. Invalid body returns 400.
-    develop_focus:
-      - "Define TypeScript types for API request/response shapes"
-      - "Implement route dispatch in Bun.serve fetch handler"
-      - "POST /api/builds: clone, write spec, spawn child"
-      - "GET /api/builds and GET /api/builds/:id"
-      - "DELETE /api/builds/:id: kill child process"
-      - "POST /api/builds/:id/intervene: write response file"
-      - "GET /api/builds/:id/events: SSE with ReadableStream"
-      - "Write tests for each endpoint"
-
-- id: git_remote_ops
-  title: "Git remote operations"
-  tags: [service, git]
-  depends_on: []
-  budget:
-    max_iterations: 10
-    max_cost: 40.0
-  eval:
-    command: >-
-      grep -q 'async clone' src/git/index.ts &&
-      grep -q 'async push' src/git/index.ts &&
-      grep -q 'createBranch' src/git/index.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
-  variables:
-    description: >
-      Add remote git operations to the existing Git class in src/git/index.ts.
-      These are used by the serve layer at build boundaries. The existing local
-      operations (snapshot, revert, commit, diffStat) are unchanged.
-
-      New methods on the Git class:
-      1. static async clone(repo: string, branch: string, targetDir: string): Promise<Git>
-         Run `git clone --branch {branch} --single-branch {repo} {targetDir}`.
-         Return a new Git instance pointing at the cloned directory.
-         Timeout: 300 seconds (large repos).
-      2. async createBranch(name: string): Promise<void>
-         Run `git checkout -b {name}`. Used to create a working branch for
-         the build (e.g., "orca/{build-name}").
-      3. async push(remote: string, branch: string): Promise<void>
-         Run `git push {remote} {branch}`. Used after build completion.
-      4. async checkout(branch: string): Promise<void>
-         Run `git checkout {branch}`.
-      5. async currentBranch(): Promise<string>
-         Run `git rev-parse --abbrev-ref HEAD`.
-
-      All new methods should use the same Bun.spawnSync pattern as the
-      existing methods, but use async Bun.spawn for clone (which can be slow).
-
-      Write tests in src/git/index.test.ts. Tests should create temporary
-      bare repos with `git init --bare`, clone them, and verify operations.
-    develop_focus:
-      - "Add clone static method with branch and timeout support"
-      - "Add createBranch method"
-      - "Add push method"
-      - "Add checkout and currentBranch methods"
-      - "Write tests using temporary bare repos"
-
-- id: deploy_stage
-  title: "Deploy stage type in workflow loop"
-  tags: [service, engine]
-  depends_on: []
-  budget:
-    max_iterations: 10
-    max_cost: 40.0
-  eval:
-    command: >-
-      grep -q 'command.*wait_for\|deploy\|CommandStage' src/config/schema.ts &&
-      grep -q 'command\|deploy' src/engine/loop.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
-  variables:
-    description: >
-      Add a command-based stage type for the workflow loop. Currently the loop
-      handles two stage types: "eval" (subprocess, parsed result) and everything
-      else (Claude agent invocation). Add a third type: command stages that run
-      a shell command without invoking Claude.
-
-      A stage is a command stage when it has a `command` field in its stage
-      config (in the stages: section of the YAML). This is different from eval,
-      which is a special keyword in the loop.
-
-      New fields on StageConfig (src/config/schema.ts):
-      - command?: string — shell command to run
-      - wait_for?: string — health check command, polled until exit 0
-      - wait_timeout?: number — max seconds to wait for health check (default 120)
-
-      In the loop (src/engine/loop.ts), when processing a loop stage:
-      1. Check if the stage has a `command` field via resolveStage()
-      2. If yes, run it as a subprocess (like eval) instead of invoking Claude
-      3. If `wait_for` is set, poll it every 5 seconds until exit 0 or timeout
-      4. Log the stage like any other (onStageStart, onStageEnd)
-      5. If the command fails (non-zero exit), treat it like a failed stage
-
-      Example config:
-        workflow:
-          loop: [eval, analyze, develop, deploy, qa]
-        stages:
-          deploy:
-            command: "ssh server 'cd /app && git pull && docker compose up -d'"
-            wait_for: "curl -sf https://test.example.com/health"
-            wait_timeout: 180
-
-      Template variables should be interpolated in both command and wait_for,
-      same as eval commands (task_id, etc.).
-    develop_focus:
-      - "Add command, wait_for, wait_timeout to StageConfig in schema.ts"
-      - "Add command stage detection and execution in loop.ts"
-      - "Implement wait_for polling with timeout"
-      - "Interpolate template variables in command and wait_for"
-      - "Write tests for command stage execution and wait_for polling"
-
-- id: nix_integration
-  title: "Nix environment integration for serve mode"
-  tags: [service]
-  depends_on: [serve_command]
-  budget:
-    max_iterations: 10
-    max_cost: 40.0
-  eval:
-    command: >-
-      grep -q 'nix develop\|nix shell\|flake.nix\|NixConfig' src/server.ts &&
-      grep -q 'NixConfig' src/config/schema.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
-  variables:
-    description: >
-      When the serve process spawns a build, wrap the orca run command in
-      the appropriate nix environment. Supports both nix flakes (nix develop)
-      and legacy nix shell (nix shell -p).
-
-      Resolution order:
-      1. If the spec declares nix.flake (path to flake or true for repo root),
-         use `nix develop {path} --command orca run {specPath}`
-      2. Else if the spec declares nix.packages (list of nixpkgs),
-         use `nix shell nixpkgs#{pkg1} nixpkgs#{pkg2} --command orca run ...`
-      3. Else if {repoDir}/flake.nix exists (auto-detect),
-         use `nix develop {repoDir} --command orca run {specPath}`
-      4. Else if {repoDir}/shell.nix or {repoDir}/default.nix exists,
-         use `nix-shell {repoDir}/shell.nix --run "orca run {specPath}"`
-      5. Else: spawn `orca run {specPath}` directly (no nix)
-
-      The nix wrapper is transparent — the inner orca run doesn't know it's
-      inside a nix environment. All claude invocations and eval commands
-      inherit the nix PATH automatically.
-
-      Configuration in project.orca.yaml:
-        # Use the repo's flake.nix (auto-detected if omitted)
-        nix:
-          flake: true
-
-        # Use a flake at a specific path
-        nix:
-          flake: ./subdir
-
-        # Ad-hoc packages without a flake
-        nix:
-          packages: [nodejs, bun, git, openssh]
-
-        # Disable nix even if flake.nix exists
-        nix:
-          enable: false
-
-      Add nix configuration types to src/config/schema.ts:
-        nix?: NixConfig
-
-        interface NixConfig {
-          enable?: boolean;            // default true, set false to disable
-          flake?: boolean | string;    // true = repo root, string = path
-          packages?: string[];         // nixpkgs for nix shell -p
-        }
-
-      New helper function in src/server.ts (or a new src/nix.ts):
-        buildNixCommand(repoDir: string, nixConfig: NixConfig | undefined, innerCmd: string[]): string[]
-      Returns the full command array with nix wrapper if applicable.
-
-      Write tests that verify command construction for each resolution path.
-      Mock the filesystem checks (flake.nix exists, shell.nix exists, etc.).
-      Don't require nix to be installed for tests to pass.
-    develop_focus:
-      - "Add NixConfig type to schema.ts"
-      - "Implement buildNixCommand with resolution order"
-      - "Auto-detect flake.nix, shell.nix, default.nix"
-      - "Support nix develop (flakes) and nix shell -p (packages)"
-      - "Support legacy nix-shell for shell.nix/default.nix"
-      - "Support nix.enable: false to skip nix"
-      - "Integrate into serve build spawn logic"
-      - "Write tests for each resolution path (mock fs)"
-
-- id: web_dashboard
-  title: "Web dashboard UI"
-  tags: [service, ui]
-  depends_on: [rest_api]
-  budget:
-    max_iterations: 15
-    max_cost: 80.0
-  stages:
-    develop:
-      max_turns: 250
-  eval:
-    command: >-
-      test -f src/web/dashboard.html &&
-      grep -q 'EventSource\|buildList\|intervention' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
-  variables:
-    description: >
-      Create src/web/dashboard.html — a single-file HTML application that
-      serves as the web interface for orca serve. Replaces monitor.html as
-      the primary UI. Embedded into the binary via Bun static import.
-
-      Uses the REST API for commands (fetch POST/DELETE) and SSE (EventSource)
-      for live streaming. No WebSocket needed.
-
-      Pages / views (all in one SPA, no router needed — just show/hide):
-
-      1. Build list — shows all builds with status, cost, task progress.
-         Each build links to its detail view. Fetches via GET /api/builds.
-
-      2. Create build — form with: repo URL, branch (default: main),
-         spec source (from repo / write inline), inline spec editor (textarea
-         with monospace font), template dropdown that populates the editor.
-         Submit sends POST /api/builds.
-
-      3. Build detail — live monitoring view, modeled on the existing
-         monitor.html but updated for the REST/SSE API:
-         - Build header: name, status, cost, elapsed time
-         - Task list: all tasks with status indicators
-         - Current task detail: stage, iteration, budget bars
-         - Log viewer: streaming output via SSE (EventSource on
-           /api/builds/:id/events)
-         - Stop button: DELETE /api/builds/:id
-
-      4. Intervention banner — appears when an "intervention" SSE event
-         is received. Shows cause, diagnosis, suggested fix. Three buttons:
-         Continue, Skip, Abort. Optional note field. Sends POST
-         /api/builds/:id/intervene.
-
-      Design:
-      - Dark theme (match the existing monitor.html aesthetic)
-      - No framework — vanilla HTML/CSS/JS
-      - SSE via EventSource with automatic reconnect (built-in)
-      - Responsive layout (works on mobile for checking builds remotely)
-
-      The serve process imports this file and serves it at GET /, same pattern
-      as web.ts currently serves monitor.html. Update src/server.ts to import
-      from ../web/dashboard.html.
-    develop_focus:
-      - "Create src/web/dashboard.html with all views"
-      - "Implement SSE client with EventSource for live updates"
-      - "Build list view with status indicators"
-      - "Create build form with spec editor and template selection"
-      - "Build detail view with live monitoring and stop button"
-      - "Intervention banner with action buttons"
-      - "Dark theme, responsive, no frameworks"
-
-- id: spec_management
-  title: "Spec resolution in build creation"
-  tags: [service]
-  depends_on: [rest_api, git_remote_ops]
+- id: eval_results_display
+  title: "Show eval test results on task cards"
+  tags: [ui]
+  depends_on: [server_state_enrichment, task_list_and_history]
   budget:
     max_iterations: 8
-    max_cost: 30.0
-  eval:
-    command: >-
-      grep -q 'spec_path\|writeSpec\|resolveSpec' src/server.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
-  variables:
-    description: >
-      Implement spec resolution in the POST /api/builds handler.
-
-      When creating a build:
-      - If `spec` (string) is provided in the request body: write it to
-        {repoDir}/project.orca.yaml after cloning. This is the inline spec
-        sent from the web UI.
-      - If `spec_path` (string) is provided: verify the file exists in the
-        cloned repo. Return 400 if not found.
-      - If neither: look for project.orca.yaml in the repo root. Return 400
-        if not found.
-      - Parse the spec to extract the build name for tracking.
-
-      The intervention handler (POST /api/builds/:id/intervene) writes
-      intervention_response.json to the build's .orca/ directory. The
-      existing pollForResponse() in intervention/index.ts picks it up
-      within 10 seconds.
-
-      All file operations should handle errors gracefully (repo not cloned
-      yet, malformed YAML) and return appropriate HTTP error codes with
-      JSON error bodies.
-    develop_focus:
-      - "Implement spec resolution in POST /api/builds handler"
-      - "Write inline spec to disk after clone"
-      - "Look up spec_path or default project.orca.yaml"
-      - "Implement intervention response file writing"
-      - "Handle errors with proper HTTP status codes"
-      - "Write tests for each resolution path"
-
-# ---------------------------------------------------------------------------
-# QA Validation — no code changes, just verify the new features work live
-# ---------------------------------------------------------------------------
-
-- id: qa_server_lifecycle
-  title: "QA: Server lifecycle and build management"
-  tags: [qa, service]
-  depends_on: []
-  budget:
-    max_iterations: 3
-    max_cost: 20.0
-  stages:
-    develop:
-      max_turns: 1
-  variables:
-    description: >
-      QA-only task — do NOT modify any code in the develop stage.
-
-      Verify the serve mode works end-to-end: server starts, accepts build
-      requests, clones repos, runs builds to completion, tracks state, and
-      shuts down cleanly.
-
-      Test scenarios:
-      1. Create a build from the fixture repo, wait for it to complete,
-         verify the final status is "completed" and all 3 tasks passed.
-      2. Create two builds concurrently, verify both appear in GET /builds
-         and both complete independently.
-      3. Create a build and DELETE it while running, verify it stops.
-      4. Verify GET /builds/:id returns correct detail including lastState
-         after the build completes.
-      5. Verify GET /builds/:id/logs returns captured output.
-
-- id: qa_sse_streaming
-  title: "QA: SSE event streaming"
-  tags: [qa, service]
-  depends_on: []
-  budget:
-    max_iterations: 3
-    max_cost: 20.0
-  stages:
-    develop:
-      max_turns: 1
-  variables:
-    description: >
-      QA-only task — do NOT modify any code in the develop stage.
-
-      Verify that SSE streaming delivers real-time state updates for builds.
-
-      Test scenarios:
-      1. Connect to GET /builds/:id/events before the build starts. Verify
-         you receive a "status" event immediately upon connecting.
-      2. Create a build, connect to its event stream, and capture events
-         for the duration. Verify you receive "state" events as the build
-         progresses (state.json updates trigger broadcasts).
-      3. Verify the SSE format is correct: lines starting with "event:" and
-         "data:" followed by valid JSON.
-      4. Verify multiple concurrent SSE connections to the same build all
-         receive the same events.
-
-- id: qa_git_operations
-  title: "QA: Git operations in builds"
-  tags: [qa, service]
-  depends_on: []
-  budget:
-    max_iterations: 3
-    max_cost: 20.0
-  stages:
-    develop:
-      max_turns: 1
-  variables:
-    description: >
-      QA-only task — do NOT modify any code in the develop stage.
-
-      Verify that orca's git integration works correctly during builds run
-      through the serve mode.
-
-      Test scenarios:
-      1. Create a build from the fixture and let it complete. Check the
-         cloned repo's git log — verify commits like "[orca] qa-fixture:
-         task2 complete" appear for each completed task.
-      2. Verify the cloned repo is at the correct branch and the working
-         tree is clean after the build completes.
-      3. Reset the fixture with `git reset --hard qa-baseline && git clean -fd`,
-         run another build, and verify the commits are created fresh.
-
-- id: qa_command_stages
-  title: "QA: Command stages and deploy workflow"
-  tags: [qa, service]
-  depends_on: []
-  budget:
-    max_iterations: 3
-    max_cost: 20.0
-  stages:
-    develop:
-      max_turns: 1
-  variables:
-    description: >
-      QA-only task — do NOT modify any code in the develop stage.
-
-      Verify that command stages work correctly in the build workflow. The
-      fixture project uses a "mock_develop" command stage that copies fix
-      files to simulate agent code changes.
-
-      Test scenarios:
-      1. Create a build from the fixture. Verify that task2 and task3 go
-         through the loop: eval FAIL → mock_develop (command stage copies
-         the fix) → eval PASS. Check the build's lastState to confirm
-         iteration counts > 0 for task2 and task3.
-      2. Verify that task1 (already correct) passes eval immediately without
-         running mock_develop.
-      3. Check the build completes with status "completed" and all 3 tasks
-         in tasksCompleted.
-
-- id: qa_nix_detection
-  title: "QA: Nix environment auto-detection"
-  tags: [qa, service]
-  depends_on: []
-  budget:
-    max_iterations: 3
-    max_cost: 20.0
-  stages:
-    develop:
-      max_turns: 1
-  variables:
-    description: >
-      QA-only task — do NOT modify any code in the develop stage.
-
-      Verify that the nix environment detection works. The fixture project
-      has a shell.nix file, which should be auto-detected by the serve
-      process when spawning a build.
-
-      Test scenarios:
-      1. Start the test server. Create a build from the fixture (which has
-         shell.nix). If nix is available on the system, verify the build
-         runs inside a nix-shell environment. If nix is not available,
-         verify the build falls back to running without nix and still
-         completes (the fixture only needs bun, which is already in PATH).
-      2. Create a build with an inline spec that sets `nix: { enable: false }`.
-         Verify the build runs without nix wrapping regardless of shell.nix.
-      3. Check the build logs or process for evidence of nix wrapping
-         (e.g., "nix-shell" in the command or PATH changes).
-
-- id: qa_error_handling
-  title: "QA: API error handling and edge cases"
-  tags: [qa, service]
-  depends_on: [rest_api, serve_command]
-  budget:
-    max_iterations: 3
-    max_cost: 20.0
-  stages:
-    develop:
-      max_turns: 1
-  variables:
-    description: >
-      QA-only task — do NOT modify any code in the develop stage.
-
-      Verify the server handles errors and edge cases gracefully.
-
-      Test scenarios:
-      1. GET /builds/nonexistent → 404 with JSON error body.
-      2. POST /builds with empty JSON → 400 with error about missing repo.
-      3. POST /builds with invalid JSON → 400.
-      4. DELETE /builds/nonexistent → 404.
-      5. POST /builds/:id/intervene with invalid action → 400.
-      6. POST /builds/:id/intervene with no body → 400.
-      7. GET /nonexistent-path → 404.
-      8. POST /builds with a repo path that doesn't exist → build status
-         should transition to "failed" (clone failure).
-      9. Verify all error responses include CORS headers.
-
-- id: qa_intervention
-  title: "QA: Intervention protocol via API"
-  tags: [qa, service]
-  depends_on: [rest_api, serve_command]
-  budget:
-    max_iterations: 3
-    max_cost: 20.0
-  stages:
-    develop:
-      max_turns: 1
-  variables:
-    description: >
-      QA-only task — do NOT modify any code in the develop stage.
-
-      Verify the intervention API endpoint correctly writes the response
-      file that the build process polls for.
-
-      Test scenarios:
-      1. Create a build, wait for it to start. POST /builds/:id/intervene
-         with action "continue" and a note. Verify the response is 200
-         and includes the action.
-      2. Check that .orca/intervention_response.json was created in the
-         build's repo directory with the correct action and note.
-      3. Test all three valid actions: "continue", "skip", "abort".
-      4. Verify invalid actions are rejected with 400.
-
-- id: qa_dashboard_ui
-  title: "QA: Dashboard UI via Playwright"
-  tags: [qa, service, ui]
-  depends_on: []
-  budget:
-    max_iterations: 3
     max_cost: 25.0
-  stages:
-    develop:
-      max_turns: 1
-    qa:
-      max_turns: 100
+  eval:
+    command: >-
+      grep -q '_evalResult\|evalResult\|test.*pass\|passing' src/web/dashboard.html &&
+      grep -q 'failed.*test\|failing.*test\|fail-list' src/web/dashboard.html &&
+      bun test 2>&1
+    parser: exit_code
+    timeout: 60
   variables:
     description: >
-      QA-only task — do NOT modify any code in the develop stage.
+      The server now injects _evalResults (Record<taskId, EvalResult>) into the
+      state. Display this on each task card in the dashboard.
 
-      Verify the web dashboard works correctly in a real browser using the
-      Playwright MCP tools. The test server is already running at
-      http://localhost:7071 (started by the deploy stage).
+      EvalResult shape (from src/config/schema.ts):
+        { passed: boolean, summary: string, details?: string,
+          passed_tests?: string[], failed_tests?: string[],
+          total?: number, passed_count?: number, failed_count?: number }
 
-      ### Setup
+      For each task that has an eval result in state._evalResults[taskId]:
 
-      Use the Playwright MCP tools to interact with the dashboard. Navigate
-      to http://localhost:7071/ to load the dashboard.
+      1. Show a compact test summary next to the task meta:
+         - "14/20 passing" (green if all pass, yellow/red otherwise)
+         - Or "COMPILE ERROR" in red if no test counts
 
-      ### Test scenarios
+      2. If there are failed_tests, show them in a collapsed list below the
+         task header (same expand/collapse pattern as the history section).
+         Each failing test name on its own line, dimmed red text.
 
-      1. **Dashboard loads**: Navigate to http://localhost:7071/. Take a
-         snapshot. Verify the page contains the orca dashboard UI elements
-         (build list, create form, or similar). Take a screenshot to
-         /tmp/orca-qa-dashboard.png and read it to visually confirm.
+      3. On the iteration history rows (from task_list_and_history), show the
+         eval result for that iteration if available. The eval stage dot should
+         be green (pass) or red (fail) based on the result from that iteration's
+         StageRecord — use the summary field which contains the evalSummary()
+         output.
+    develop_focus:
+      - "Read _evalResults from state and display on task cards"
+      - "Show pass/fail counts with color coding"
+      - "Collapsed list of failing test names"
+      - "Color eval stage dots in iteration history based on summary"
 
-      2. **Create build form**: Find the create build form or UI. Fill in
-         the repo field with "/tmp/orca-qa-env/project" and a name. Submit
-         the form. Verify the UI updates to show the new build.
+- id: structured_activity_log
+  title: "Replace raw stdout log with structured JSONL event log"
+  tags: [ui, core]
+  depends_on: [server_state_enrichment]
+  budget:
+    max_iterations: 10
+    max_cost: 40.0
+  stages:
+    develop:
+      max_turns: 200
+  eval:
+    command: >-
+      grep -q '_recentLog\|recentLog\|renderLog\|log-entry.*tool' src/web/dashboard.html &&
+      grep -q 'invoke_start\|invoke_end\|tool_use' src/web/dashboard.html &&
+      bun test 2>&1
+    parser: exit_code
+    timeout: 120
+  variables:
+    description: >
+      The output log panel in the dashboard detail view currently shows raw
+      stdout/stderr lines from the child process (PrintDisplay output). These
+      are unstructured text lines like "[develop] running..." and "[eval] FAIL".
 
-      3. **Build progress**: After creating a build, verify the dashboard
-         shows the build status updating (cloning → running → completed).
-         Wait a few seconds and take snapshots to observe the progress.
+      Replace this with a structured activity log rendered from _recentLog
+      (JSONL events injected by the server). This is the same data that
+      monitor.html already renders in its activity log panel.
 
-      4. **Build list**: Verify the build list shows the created build(s)
-         with correct status indicators.
+      Rework the log panel in renderDetail():
 
-      5. **Error state**: If possible, trigger an error (e.g., create a
-         build with a nonexistent repo) and verify the UI shows the
-         failure state.
+      1. If state._recentLog exists and has entries, render them instead of
+         the raw buildLogs array. Each JSONL entry has:
+         - event_type: "invoke_start" | "invoke_end" | "tool_use"
+         - timestamp, label, model, num_turns, cost_usd, duration_ms
+         - tool_name, tool_input (for tool_use events)
 
-      ### Screenshot workflow
+      2. Render events using the same format as monitor.html's renderLog():
+         - invoke_start: green, "▶ {label} started ({model})"
+         - invoke_end: yellow, "■ {label} done — {turns} turns, ${cost}, {duration}"
+         - tool_use: cyan, "• {tool_name} {key_arg}" where key_arg is:
+           Read/Write/Edit → file_path, Bash → command (truncated),
+           Grep → pattern, Glob → pattern
+         - Timestamp prefix in dim text
 
-      After each significant interaction, take a screenshot and READ it:
-      ```
-      Use mcp__playwright__browser_take_screenshot to capture the page
-      ```
-      You are a multimodal model — examine the screenshot to verify:
-      - The dashboard renders without errors
-      - Build status is displayed correctly
-      - Forms are functional
-      - No blank pages or JavaScript errors
+      3. Keep the raw stdout log as a fallback tab/toggle: "Activity" | "Raw Output".
+         Default to Activity when _recentLog is available.
 
-      Use mcp__playwright__browser_console_messages to check for JS errors.
+      4. Auto-scroll to bottom on new entries. Show entry count in header.
 
-      ### Verdict
+      Copy the renderLog function and log-entry CSS from monitor.html — it
+      already handles this exact rendering.
+    develop_focus:
+      - "Render _recentLog JSONL events with typed formatting"
+      - "Port renderLog() and log-entry CSS from monitor.html"
+      - "Add Activity / Raw Output toggle"
+      - "Fall back to raw stdout when _recentLog is empty"
+      - "Auto-scroll and entry count"
 
-      Return structured output:
-      - status: "passed" if the dashboard loads, forms work, and builds
-        are displayed correctly
-      - status: "failed" if the dashboard is broken, forms don't submit,
-        or build status doesn't update
-      - summary: what was tested with screenshot observations
-      - issues: specific UI failures (empty string if passed)
+- id: budget_health_indicators
+  title: "Color-coded progress bars and stuck detection"
+  tags: [ui]
+  depends_on: [task_list_and_history]
+  budget:
+    max_iterations: 6
+    max_cost: 20.0
+  eval:
+    command: >-
+      grep -q 'stuck\|outputHash\|output-hash' src/web/dashboard.html &&
+      grep -q 'warning\|yellow\|red.*progress\|bar-warn\|bar-danger' src/web/dashboard.html &&
+      bun test 2>&1
+    parser: exit_code
+    timeout: 60
+  variables:
+    description: >
+      The iteration and budget progress bars are always blue (var(--bar-fill)).
+      Add color thresholds and stuck detection.
+
+      Progress bar colors:
+      - Under 60%: green (var(--green) or #3fb950)
+      - 60-85%: yellow (var(--yellow) or #d29922)
+      - Above 85%: red (var(--red) or #f85149)
+      Apply to both the iteration bar and budget bar independently.
+      Compute percentage from existing values (iteration/maxIterations,
+      costUsd/maxCost) and set the bar fill color via inline style.
+
+      Stuck detection:
+      - Read state.tasks[id].history[] and check the outputHash field on
+        consecutive entries with the same label (stage name).
+      - If the last 2+ entries for a loop stage have identical non-null
+        outputHash values, the task is stuck (producing the same output).
+      - Show a "stuck" badge on the task card in orange/yellow:
+        "⟳ stuck — same output for N iterations"
+      - This is the same detection logic as detectStuck() in supervisor.ts,
+        replicated client-side for display purposes.
+
+      Both features are pure client-side changes in dashboard.html.
+    develop_focus:
+      - "Compute progress percentage and apply color thresholds"
+      - "Detect stuck from consecutive identical outputHash in history"
+      - "Show stuck badge on affected task cards"
