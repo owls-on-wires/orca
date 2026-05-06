@@ -108,7 +108,7 @@ describe("GET /builds", () => {
 });
 
 describe("POST /builds", () => {
-  test("returns 400 without repo or dir", async () => {
+  test("returns 400 without mode", async () => {
     const res = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -116,7 +116,40 @@ describe("POST /builds", () => {
     });
     expect(res.status).toBe(400);
     const body = await res.json() as any;
-    expect(body.error).toContain("repo or dir");
+    expect(body.error).toContain("mode");
+  });
+
+  test("returns 400 with invalid mode", async () => {
+    const res = await fetch(`${baseUrl}/builds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "invalid" }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error).toContain("Invalid mode");
+  });
+
+  test("returns 400 with clone mode but no repo", async () => {
+    const res = await fetch(`${baseUrl}/builds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "clone" }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error).toContain("repo");
+  });
+
+  test("returns 400 with local mode but no dir", async () => {
+    const res = await fetch(`${baseUrl}/builds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "local" }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error).toContain("dir");
   });
 
   test("returns 400 with invalid JSON", async () => {
@@ -133,7 +166,7 @@ describe("POST /builds", () => {
     const res = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "test-build" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "test-build" }),
     });
     expect(res.status).toBe(201);
     const body = await res.json() as any;
@@ -147,7 +180,7 @@ describe("POST /builds", () => {
     const createRes = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "listed-build" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "listed-build" }),
     });
     const { id } = await createRes.json() as any;
 
@@ -162,7 +195,7 @@ describe("POST /builds", () => {
     const res = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dir: repoDir, name: "dir-build" }),
+      body: JSON.stringify({ mode: "local", dir: repoDir, name: "dir-build" }),
     });
     expect(res.status).toBe(201);
     const body = await res.json() as any;
@@ -175,7 +208,7 @@ describe("POST /builds", () => {
     const res = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dir: "/tmp/nonexistent-dir-orca-test" }),
+      body: JSON.stringify({ mode: "local", dir: "/tmp/nonexistent-dir-orca-test" }),
     });
     expect(res.status).toBe(400);
     const body = await res.json() as any;
@@ -194,7 +227,7 @@ describe("GET /builds/:id", () => {
     const createRes = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "detail-build" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "detail-build" }),
     });
     const { id } = await createRes.json() as any;
 
@@ -219,7 +252,7 @@ describe("DELETE /builds/:id", () => {
     const createRes = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "stop-build" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "stop-build" }),
     });
     const { id } = await createRes.json() as any;
 
@@ -245,7 +278,7 @@ describe("GET /builds/:id/logs", () => {
     const createRes = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "logs-build" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "logs-build" }),
     });
     const { id } = await createRes.json() as any;
 
@@ -276,7 +309,7 @@ describe("POST /builds/:id/intervene", () => {
     const createRes = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "intervene-build" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "intervene-build" }),
     });
     const { id } = await createRes.json() as any;
 
@@ -293,7 +326,7 @@ describe("POST /builds/:id/intervene", () => {
     const createRes = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "intervene-ok" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "intervene-ok" }),
     });
     const { id } = await createRes.json() as any;
 
@@ -326,7 +359,7 @@ describe("GET /builds/:id/events", () => {
     const createRes = await fetch(`${baseUrl}/builds`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: repoDir, name: "sse-build" }),
+      body: JSON.stringify({ mode: "clone", repo: repoDir, name: "sse-build" }),
     });
     const { id } = await createRes.json() as any;
 

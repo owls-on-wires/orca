@@ -292,19 +292,37 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
         return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: corsHeaders });
       }
 
+      const mode = body.mode as string | undefined;
       const repoUrl = body.repo as string | undefined;
       const dirPath = body.dir as string | undefined;
       const name = body.name as string | undefined;
       const spec = body.spec as string | undefined;
       const spec_path = body.spec_path as string | undefined;
 
-      if (!repoUrl && !dirPath) {
-        return Response.json({ error: "Missing required field: repo or dir" }, { status: 400, headers: corsHeaders });
+      // Validate mode field
+      if (!mode) {
+        return Response.json({ error: 'Missing required field: mode ("clone" or "local")' }, { status: 400, headers: corsHeaders });
       }
 
-      // dir mode: use existing directory in-place (no clone)
-      // repo mode: clone into data dir
-      const useDir = !!dirPath;
+      if (mode !== "clone" && mode !== "local") {
+        return Response.json({ error: 'Invalid mode: must be "clone" or "local"' }, { status: 400, headers: corsHeaders });
+      }
+
+      // Reject if both repo and dir are provided
+      if (repoUrl && dirPath) {
+        return Response.json({ error: "Cannot specify both repo and dir" }, { status: 400, headers: corsHeaders });
+      }
+
+      // Validate mode-specific required fields
+      if (mode === "clone" && !repoUrl) {
+        return Response.json({ error: "Missing required field: repo" }, { status: 400, headers: corsHeaders });
+      }
+
+      if (mode === "local" && !dirPath) {
+        return Response.json({ error: "Missing required field: dir" }, { status: 400, headers: corsHeaders });
+      }
+
+      const useDir = mode === "local";
       const buildId = randomUUID().slice(0, 8);
       const repoPath = useDir ? dirPath! : join(dataDir, "builds", (name || buildId), "repo");
 
@@ -623,7 +641,7 @@ export function startServer(options: ServeOptions): {
     console.log(`  Data dir: ${dataDir}`);
     console.log(`  Endpoints:`);
     console.log(`    GET    /                       — dashboard`);
-    console.log(`    POST   /builds                 — start a build`);
+    console.log(`    POST   /builds                 — start a build (requires mode: "clone" or "local")`);
     console.log(`    GET    /builds                 — list builds`);
     console.log(`    GET    /builds/:id             — build details`);
     console.log(`    DELETE /builds/:id             — stop a build`);

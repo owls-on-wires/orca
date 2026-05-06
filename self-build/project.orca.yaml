@@ -12,9 +12,7 @@ eval:
 
 workflow:
   loop:
-    - eval
     - develop
-  post:
     - deploy
     - qa
 
@@ -81,10 +79,13 @@ prompts:
 
         cat .orca/tasks/{task_id}/qa.json 2>/dev/null
 
-      If the file exists and shows status "failed", read the issues field.
-      The unit tests (eval) passed but the live integration test did not.
-      Fix the issue described in the QA report, then let eval verify your
-      changes compile and pass unit tests.
+      If the file exists and shows status "failed", read the issues field
+      and fix the problems described.
+
+      ## Compile check
+
+      Before finishing, run `bun test` to verify your changes compile and
+      don't break existing tests. Fix any failures before completing.
     qa: |
       ## Orca Integration QA
 

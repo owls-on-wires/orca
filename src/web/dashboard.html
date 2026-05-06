@@ -319,14 +319,29 @@ a:hover { text-decoration: underline; }
   <div class="view" id="view-create">
     <h2 style="font-size:16px;margin-bottom:16px;">Create Build</h2>
     <form id="create-form" onsubmit="return submitBuild(event)">
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Repository URL</label>
-          <input class="form-input" id="field-repo" type="text" placeholder="https://github.com/user/repo" required>
+      <div class="form-group">
+        <label class="form-label">Mode</label>
+        <div class="form-radio-group">
+          <label><input type="radio" name="build-mode" value="clone" checked onchange="toggleModeFields()"> Clone repository</label>
+          <label><input type="radio" name="build-mode" value="local" onchange="toggleModeFields()"> Local directory</label>
         </div>
+      </div>
+      <div id="clone-fields">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Repository URL</label>
+            <input class="form-input" id="field-repo" type="text" placeholder="https://github.com/user/repo">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Branch</label>
+            <input class="form-input" id="field-branch" type="text" placeholder="main" value="main">
+          </div>
+        </div>
+      </div>
+      <div id="local-fields" style="display:none">
         <div class="form-group">
-          <label class="form-label">Branch</label>
-          <input class="form-input" id="field-branch" type="text" placeholder="main" value="main">
+          <label class="form-label">Directory Path</label>
+          <input class="form-input" id="field-dir" type="text" placeholder="/absolute/path/to/project">
         </div>
       </div>
       <div class="form-group">
@@ -501,17 +516,33 @@ function applyTemplate() {
   }
 }
 
+function toggleModeFields() {
+  var mode = document.querySelector('input[name="build-mode"]:checked').value;
+  document.getElementById('clone-fields').style.display = mode === 'clone' ? 'block' : 'none';
+  document.getElementById('local-fields').style.display = mode === 'local' ? 'block' : 'none';
+}
+
 function submitBuild(e) {
   e.preventDefault();
-  var repo = document.getElementById('field-repo').value.trim();
-  var branch = document.getElementById('field-branch').value.trim() || 'main';
+  var mode = document.querySelector('input[name="build-mode"]:checked').value;
   var name = document.getElementById('field-name').value.trim();
   var specSource = document.querySelector('input[name="spec-source"]:checked').value;
   var spec = specSource === 'inline' ? document.getElementById('field-spec').value : undefined;
 
-  if (!repo) { showToast('Repository URL is required'); return false; }
+  var body = { mode: mode };
 
-  var body = { repo: repo, branch: branch };
+  if (mode === 'clone') {
+    var repo = document.getElementById('field-repo').value.trim();
+    var branch = document.getElementById('field-branch').value.trim() || 'main';
+    if (!repo) { showToast('Repository URL is required'); return false; }
+    body.repo = repo;
+    body.branch = branch;
+  } else {
+    var dir = document.getElementById('field-dir').value.trim();
+    if (!dir) { showToast('Directory path is required'); return false; }
+    body.dir = dir;
+  }
+
   if (name) body.name = name;
   if (spec) body.spec = spec;
 
