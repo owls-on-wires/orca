@@ -651,6 +651,7 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
         enrichedState = enrichState({ ...enrichedState }, build);
       }
 
+      const cache = loadBuildConfigSync(build);
       return Response.json({
         id: build.id,
         name: build.name,
@@ -662,6 +663,7 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
         lastState: enrichedState,
         stdoutLines: build.stdout.length,
         stderrLines: build.stderr.length,
+        _buildMeta: buildMetaFromCache(build, cache),
       }, { headers: corsHeaders });
     }
 
