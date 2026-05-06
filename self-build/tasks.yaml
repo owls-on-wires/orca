@@ -392,3 +392,73 @@
       - "Compute progress percentage and apply color thresholds"
       - "Detect stuck from consecutive identical outputHash in history"
       - "Show stuck badge on affected task cards"
+
+- id: build_metadata_display
+  title: "Show project metadata on build list and detail views"
+  tags: [ui, backend]
+  depends_on: [server_state_enrichment]
+  budget:
+    max_iterations: 8
+    max_cost: 25.0
+  eval:
+    command: >-
+      grep -q 'repoPath\|projectDir\|project_dir' src/web/dashboard.html &&
+      grep -q 'nixMode\|nix.*mode\|nix.*type\|nix-info' src/web/dashboard.html &&
+      grep -q 'model\|workflow' src/web/dashboard.html &&
+      bun test 2>&1
+    parser: exit_code
+    timeout: 60
+  variables:
+    description: >
+      The build list and detail views show minimal metadata — just name, status,
+      start time, and repo URL. The server already has access to much more via
+      BuildInfo and the parsed orca config. Surface it.
+
+      Backend (src/server.ts):
+      Add a _buildMeta object to the enriched state payload (alongside
+      _pendingTasks, _workflow, etc.). Populate it from BuildInfo and the
+      cached parsed config:
+
+        _buildMeta: {
+          repoUrl: string,           // already in BuildInfo
+          repoPath: string,          // already in BuildInfo
+          specPath: string | null,   // already in BuildInfo
+          mode: "clone" | "local",   // infer from whether repoUrl == repoPath
+          projectDir: string,        // from config.project_dir
+          model: string,             // from config.model
+          nixMode: string | null,    // "flake" | "packages" | "shell.nix" | "none"
+                                     // derive from the NixConfig + what buildNixCommand resolved
+          taskCount: number,         // from _totalTasks (already computed)
+          workflow: string,          // short summary like "eval → develop (post: deploy, qa)"
+          gitEnabled: boolean,       // from config.git?.enabled
+          budgetGlobal: { max_iterations: number, max_cost: number } | null
+        }
+
+      Also include _buildMeta in the GET /builds list endpoint (not just detail),
+      so the build cards on the overview page can show key info.
+
+      Frontend (src/web/dashboard.html):
+
+      On the build list (overview) cards:
+      - Show project path below the name (dimmed, smaller text)
+      - Show model name as a small badge (e.g., "opus")
+      - Show nix mode if not "none" (e.g., "nix: flake")
+
+      On the detail header:
+      - Replace the single "Repo" line with a metadata section:
+        Project: /home/user/myproject
+        Spec: self-build/project.orca.yaml
+        Mode: local (or clone from https://...)
+        Model: opus
+        Nix: flake (or packages, shell.nix, none)
+        Workflow: eval → develop (post: deploy, qa)
+        Git: enabled, snapshot before develop
+        Budget: 10 iterations, $50.00 max
+      - Use the existing dim text styling, keep it compact (two-column grid or
+        inline key-value pairs).
+    develop_focus:
+      - "Build _buildMeta object in server state enrichment"
+      - "Derive nixMode from NixConfig and buildNixCommand resolution"
+      - "Include _buildMeta in GET /builds list responses"
+      - "Render metadata on build list cards (path, model, nix)"
+      - "Render full metadata section in detail header"
