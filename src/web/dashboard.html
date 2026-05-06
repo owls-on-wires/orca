@@ -198,6 +198,25 @@ a:hover { text-decoration: underline; }
 .stage-name { min-width: 80px; }
 .stage-name.active { color: var(--yellow); font-weight: 600; }
 
+/* Expandable task history */
+.task-header.expandable { cursor: pointer; user-select: none; }
+.task-header.expandable:hover { background: rgba(255,255,255,0.02); }
+.task-expand-icon { width: 12px; text-align: center; flex-shrink: 0; font-size: 10px; color: var(--text-dim); transition: transform 0.15s; }
+.task-expand-icon.open { transform: rotate(90deg); }
+.task-history { padding: 0 16px 10px 42px; display: none; }
+.task-history.open { display: block; }
+.task-history-header { display: flex; align-items: center; gap: 2px; font-size: 10px; color: var(--text-dim); padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.task-history-header .iter-label { min-width: 44px; }
+.task-history-header .stage-col { min-width: 20px; text-align: center; }
+.task-history-header .cost-col { min-width: 50px; text-align: right; }
+.task-history-header .summary-col { flex: 1; margin-left: 8px; }
+.iter-row { display: flex; align-items: center; gap: 2px; font-size: 11px; padding: 3px 0; color: var(--text-dim); }
+.iter-row .iter-label { min-width: 44px; font-weight: 600; }
+.iter-row .stage-col { min-width: 20px; display: flex; justify-content: center; }
+.iter-row .cost-col { min-width: 50px; text-align: right; font-size: 10px; }
+.iter-row .summary-col { flex: 1; margin-left: 8px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iter-row.current { color: var(--text); }
+
 /* Progress bars */
 .progress-section { padding: 4px 16px 10px 42px; }
 .progress-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; font-size: 11px; }
@@ -711,6 +730,8 @@ function sendIntervention(id, action) {
     .catch(function(e) { showToast('Error: ' + e.message); });
 }
 
+var expandedTasks = {};
+
 function taskIcon(status) {
   var icons = {
     completed: ['icon-completed', '&#10003;'],
@@ -720,6 +741,90 @@ function taskIcon(status) {
   };
   var i = icons[status] || ['icon-pending', '&#9675;'];
   return '<span class="task-icon ' + i[0] + '">' + i[1] + '</span>';
+}
+
+function toggleTaskHistory(taskId) {
+  expandedTasks[taskId] = !expandedTasks[taskId];
+  renderDetail();
+}
+
+function getWorkflowStages(wf) {
+  var stages = [];
+  if (wf) {
+    (wf.pre || []).forEach(function(s) { stages.push(s); });
+    (wf.loop || []).forEach(function(s) { stages.push(s); });
+    (wf.post || []).forEach(function(s) { stages.push(s); });
+  }
+  return stages;
+}
+
+function renderTaskHistory(t, state) {
+  if (!t || !t.history || t.history.length === 0) return '';
+  var wf = state._workflow;
+  var stages = getWorkflowStages(wf);
+  var isOpen = expandedTasks[t.taskId];
+
+  // Group history by iteration
+  var iters = {};
+  var maxIter = 0;
+  t.history.forEach(function(h) {
+    if (!iters[h.iteration]) iters[h.iteration] = [];
+    iters[h.iteration].push(h);
+    if (h.iteration > maxIter) maxIter = h.iteration;
+  });
+
+  var html = '<div class="task-history' + (isOpen ? ' open' : '') + '" data-task-history="' + esc(t.taskId) + '">';
+
+  // Column headers
+  if (stages.length > 0) {
+    html += '<div class="task-history-header">';
+    html += '<span class="iter-label"></span>';
+    stages.forEach(function(s) {
+      html += '<span class="stage-col" title="' + esc(s) + '">' + esc(s.substring(0, 2)) + '</span>';
+    });
+    html += '<span class="cost-col">cost</span>';
+    html += '<span class="summary-col">summary</span>';
+    html += '</div>';
+  }
+
+  // Render each iteration
+  var iterNums = Object.keys(iters).map(Number).sort(function(a, b) { return a - b; });
+  iterNums.forEach(function(iterNum) {
+    var records = iters[iterNum];
+    var isCurrent = iterNum === t.iteration;
+    var completedStages = {};
+    var failedStages = {};
+    var iterCost = 0;
+    var lastSummary = '';
+
+    records.forEach(function(r) {
+      completedStages[r.label] = true;
+      iterCost += r.costUsd || 0;
+      if (r.summary) lastSummary = r.summary;
+    });
+
+    html += '<div class="iter-row' + (isCurrent ? ' current' : '') + '">';
+    html += '<span class="iter-label">Iter ' + iterNum + '</span>';
+
+    stages.forEach(function(s) {
+      var dotClass = 'pending';
+      if (completedStages[s]) {
+        dotClass = 'done';
+      } else if (isCurrent && t.currentStage === s && t.status === 'running') {
+        dotClass = 'active';
+      } else if (t.status === 'failed' && isCurrent && t.currentStage === s) {
+        dotClass = 'failed';
+      }
+      html += '<span class="stage-col"><span class="stage-dot ' + dotClass + '"></span></span>';
+    });
+
+    html += '<span class="cost-col">' + fmtCost(iterCost) + '</span>';
+    html += '<span class="summary-col" title="' + esc(lastSummary) + '">' + esc(lastSummary.substring(0, 80)) + '</span>';
+    html += '</div>';
+  });
+
+  html += '</div>';
+  return html;
 }
 
 function renderDetail() {
@@ -776,15 +881,23 @@ function renderDetail() {
   }
   html += '</div></div>';
 
-  // Task list from state
+  // Task list — show all tasks from _pendingTasks, with pending state for unstarted ones
   var taskIds = state._pendingTasks || Object.keys(tasks);
   if (taskIds.length > 0) {
     taskIds.forEach(function(id) {
       var t = tasks[id];
       var taskStatus = t ? t.status : 'pending';
       var isActive = state.currentTaskId === id;
+      var hasHistory = t && t.history && t.history.length > 0;
+      var isExpanded = expandedTasks[id];
+
       html += '<div class="task-card' + (isActive ? ' active' : '') + '">';
-      html += '<div class="task-header">';
+
+      // Task header — clickable if has history
+      html += '<div class="task-header' + (hasHistory ? ' expandable" onclick="toggleTaskHistory(\'' + esc(id) + '\')"' : '"') + '>';
+      if (hasHistory) {
+        html += '<span class="task-expand-icon' + (isExpanded ? ' open' : '') + '">&#9656;</span>';
+      }
       html += taskIcon(taskStatus);
       html += '<span class="task-name">' + esc(id) + '</span>';
       html += '<span class="task-meta">';
@@ -795,6 +908,11 @@ function renderDetail() {
       if (t && t.currentStage) html += '<span>' + esc(t.currentStage) + '</span>';
       if (t && t.stopReason) html += '<span style="color:var(--red)">' + esc(t.stopReason).substring(0, 60) + '</span>';
       html += '</span></div>';
+
+      // Expandable iteration history
+      if (hasHistory) {
+        html += renderTaskHistory(t, state);
+      }
 
       // Progress bars for active tasks
       if (isActive && t && taskStatus === 'running') {
