@@ -1,6 +1,6 @@
 ---
 name: status
-description: Check the status of an orca build. Reads .orca/state.json and reports task progress, cost, iteration counts, and any pending interventions.
+description: Check the status of an orca build. Reads .orca/runs/{name}/{timestamp}/state.json and reports task progress, cost, iteration counts, and any pending interventions.
 user-invocable: true
 argument-hint: "<config-file> [--json]"
 allowed-tools:
@@ -30,7 +30,7 @@ Check build status.
 
 ### Local builds (CLI)
 
-Reads `.orca/state.json` from the project directory. This file is updated by the build process after every stage.
+Reads `.orca/runs/{name}/{timestamp}/state.json` from the project directory. This file is updated by the build process after every stage.
 
 ```bash
 orca status $ARGUMENTS

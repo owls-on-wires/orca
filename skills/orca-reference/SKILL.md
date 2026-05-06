@@ -41,6 +41,7 @@ eval:                             # Default eval for all tasks
   command: "cargo test --test {task_id} 2>&1"
   parser: cargo_test              # cargo_test | pytest | json | exit_code
   timeout: 300
+  results_file: "results.json"    # Read eval results from file instead of stdout
 
 workflow:                         # Stage execution order (required)
   setup: scaffold                 # Run once before all tasks
@@ -48,14 +49,29 @@ workflow:                         # Stage execution order (required)
   loop: [eval, analyze, develop]  # Iteration loop (required)
   post: [regression]              # Run after loop passes
 
+workflows:                        # Named workflow templates (optional)
+  tdd:
+    pre: [write_tests]
+    loop: [eval, analyze, develop]
+    post: [regression]
+  simple:
+    loop: [eval, develop]
+
 stages:                           # Stage configurations
   develop:
+    type: agent                   # agent | command | eval (inferred if omitted)
+    gate: true                    # Require status: "passed"; restart loop on failure
+    builtin: develop              # Use this built-in prompt/schema instead of stage name
     toolset: all                  # read_only | all | code | bash
     max_turns: 150
+    model: opus                   # Override model for this stage
     escalation: true              # Check output for escalation
     supervisor: true              # Invoke supervisor on escalation
     condition: always             # always | has:<var> | file_missing:<path>
+    scope:                        # Per-stage scope override
+      writable: ["src/**"]
   deploy:                         # Command stage (no Claude invocation)
+    type: command
     command: "bash deploy.sh"     # Shell command to run
     wait_for: "curl -sf http://localhost:3000/health"  # Health check
     wait_timeout: 120             # Max seconds to wait
@@ -81,12 +97,21 @@ budget:
   stage_timeout: 900              # Seconds per stage
   stuck_window: 3                 # Identical outputs before stuck detection
 
+prompts:
+  context: "This is a Rust project using async/await."  # Prepended to every stage prompt
+  stages:                         # Per-stage text, appended to the stage prompt
+    develop: "Focus on performance."
+
 supervisor:
   model: opus
   toolset: all
   max_turns: 40
+  prompt: "custom supervisor prompt"  # Override built-in supervisor prompt
+  stuck_window: 3                 # Identical outputs before stuck detection
 
 notifications:
+  on_build_start: true
+  on_task_start: true
   on_escalation: true
   on_task_complete: true
   on_build_complete: true
@@ -96,6 +121,8 @@ notifications:
 orca:                             # Live-reloadable (edit while running)
   max_iterations: 10
   max_cost: 80.0
+  max_turns: 150
+  stage_timeout: 900
 ```
 
 ## Task Fields
@@ -108,6 +135,7 @@ orca:                             # Live-reloadable (edit while running)
 - `eval` — per-task eval override
 - `budget` — per-task budget override
 - `stages` — per-task stage overrides (max_turns, toolset)
+- `workflow` — name of a workflow template from the `workflows` map
 
 **Freeform** (passed to prompts):
 - `variables` — arbitrary key-value bag, everything becomes a template variable
@@ -148,11 +176,13 @@ Orca ships default prompts and schemas for these stages. Projects can override b
 | Stage | Purpose | Toolset |
 |-------|---------|---------|
 | `setup` | Build project, record baseline | all |
+| `understand` | Study existing codebase before changes | read_only |
 | `write_tests` | Create test file from task definition | code |
 | `analyze` | Read-only failure diagnosis | read_only |
 | `develop` | Implement changes (includes escalation) | all |
 | `supervisor` | Handle escalations from develop | all |
 | `regression` | Full suite regression check | all |
+| `qa` | Quality assurance / review | read_only |
 
 ### Stage File Resolution Order
 

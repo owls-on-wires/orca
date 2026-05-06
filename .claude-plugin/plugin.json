@@ -1,6 +1,6 @@
 {
   "name": "orca",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Declarative build orchestrator for Claude Code agents. Define tasks in YAML, orca handles the iteration loop — eval, analyze, develop, repeat.",
   "author": { "name": "owls-on-wires" },
   "homepage": "https://github.com/onezero-computer/orca"

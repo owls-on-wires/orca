@@ -23,15 +23,23 @@ orca run <config>             # run a build (resumes from prior state)
 orca run <config> --fresh     # ignore prior state, start from scratch
 orca run <config> --detach    # run in background
 orca run <config> --monitor   # start web monitor alongside build
+orca run <config> --task <id> # run a single task
+orca run <config> --from <id> # run all tasks starting from this one
+orca run <config> --tag <tag> # filter tasks by tag
+orca run <config> --skip-tag <tag>  # exclude tasks with tag
 orca serve                    # start HTTP server (REST + SSE)
 orca serve --port 8080        # custom port (default: 7070)
+orca serve --data-dir <dir>   # custom data directory
 orca monitor <config>         # watch a running build (web UI)
 orca status <config>          # one-line status
+orca status <config> --json   # machine-readable output
 orca abort <config>           # stop a running build
 orca init --template <name>   # scaffold project.orca.yaml
 orca validate <config>        # validate config
 orca --version                # show version
 ```
+
+Aliases: `build` = `run --fresh`, `resume` = `run`
 
 ## Safety Rules
 

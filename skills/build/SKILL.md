@@ -60,9 +60,9 @@ For single-task debugging:
 orca run $ARGUMENTS --task <id>
 ```
 
-Use `--monitor` to start the web monitor alongside the build:
+Use `--monitor` to start the web monitor alongside the build (foreground only, incompatible with `--detach`):
 ```bash
-orca run $ARGUMENTS --detach --monitor
+orca run $ARGUMENTS --monitor
 ```
 
 ## Serve Mode (Remote Builds)
