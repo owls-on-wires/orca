@@ -149,6 +149,55 @@ function readEvalResults(orcaDir: string, taskIds: string[]): Record<string, unk
   return results;
 }
 
+function resolveNixMode(repoPath: string, nixConfig: NixConfig | undefined): string {
+  if (nixConfig?.enable === false) return "none";
+  if (nixConfig?.flake !== undefined) return "flake";
+  if (nixConfig?.packages && nixConfig.packages.length > 0) return "packages";
+  if (existsSync(join(repoPath, "flake.nix"))) return "flake";
+  if (existsSync(join(repoPath, "shell.nix"))) return "shell.nix";
+  if (existsSync(join(repoPath, "default.nix"))) return "shell.nix";
+  return "none";
+}
+
+function buildMetaFromCache(build: BuildInfo, cache: BuildConfigCache | null): Record<string, unknown> {
+  const config = cache?.config;
+  const workflow = cache?.workflow;
+
+  // Derive workflow summary
+  let workflowSummary = "";
+  if (workflow) {
+    const parts: string[] = [];
+    if (workflow.pre) parts.push(...workflow.pre);
+    if (workflow.loop) parts.push(...workflow.loop);
+    if (workflow.post) parts.push(...workflow.post);
+    workflowSummary = parts.join(" → ");
+  }
+
+  // Derive nix mode
+  const nixConfig = config?.nix;
+  const nixMode = resolveNixMode(build.repoPath, nixConfig);
+
+  // Derive mode
+  const mode = build.repoUrl === build.repoPath ? "local" : "clone";
+
+  return {
+    repoUrl: build.repoUrl,
+    repoPath: build.repoPath,
+    specPath: build.specPath || null,
+    mode,
+    projectDir: config?.project_dir || ".",
+    model: config?.model || "unknown",
+    nixMode,
+    taskCount: cache?.taskIds.length || 0,
+    workflow: workflowSummary,
+    gitEnabled: config?.git?.enabled ?? false,
+    budgetGlobal: config?.budget ? {
+      max_iterations: config.budget.max_iterations || 0,
+      max_cost: config.budget.max_cost || 0,
+    } : null,
+  };
+}
+
 function enrichState(state: Record<string, unknown>, build: BuildInfo): Record<string, unknown> {
   const cache = loadBuildConfigSync(build);
 
@@ -165,6 +214,9 @@ function enrichState(state: Record<string, unknown>, build: BuildInfo): Record<s
       state._evalResults = evalResults;
     }
   }
+
+  // Build metadata
+  state._buildMeta = buildMetaFromCache(build, cache);
 
   // Recent log for current task
   const orcaDir = join(build.repoPath, ".orca");
@@ -563,14 +615,18 @@ function createFetchHandler(builds: Map<string, BuildInfo>, dataDir: string) {
 
     // GET /builds — list all builds
     if (method === "GET" && url.pathname === "/builds") {
-      const list = Array.from(builds.values()).map((b) => ({
-        id: b.id,
-        name: b.name,
-        status: b.status,
-        startedAt: b.startedAt,
-        exitCode: b.exitCode,
-        repoUrl: b.repoUrl,
-      }));
+      const list = Array.from(builds.values()).map((b) => {
+        const cache = loadBuildConfigSync(b);
+        return {
+          id: b.id,
+          name: b.name,
+          status: b.status,
+          startedAt: b.startedAt,
+          exitCode: b.exitCode,
+          repoUrl: b.repoUrl,
+          _buildMeta: buildMetaFromCache(b, cache),
+        };
+      });
       return Response.json(list, { headers: corsHeaders });
     }
 

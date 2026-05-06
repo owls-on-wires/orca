@@ -583,11 +583,16 @@ function renderBuildList(builds) {
   var html = '';
   builds.forEach(function(b) {
     var elapsed = b.startedAt ? fmtDuration((Date.now() - new Date(b.startedAt).getTime()) / 1000) : '';
+    var meta = b._buildMeta || {};
     html += '<div class="build-card" onclick="showView(\'detail\',\'' + esc(b.id) + '\')">';
     html += '<div class="build-card-top">';
     html += '<span class="build-card-name">' + esc(b.name || b.id) + '</span>';
+    html += '<div style="display:flex;gap:6px;align-items:center;">';
+    if (meta.model && meta.model !== 'unknown') html += '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:var(--bar-bg);color:var(--cyan);font-weight:600;">' + esc(meta.model) + '</span>';
+    if (meta.nixMode && meta.nixMode !== 'none') html += '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:var(--bar-bg);color:var(--text-dim);">nix: ' + esc(meta.nixMode) + '</span>';
     html += '<span class="status-badge status-' + esc(b.status) + '"><span class="status-dot"></span>' + esc(b.status) + '</span>';
-    html += '</div>';
+    html += '</div></div>';
+    if (meta.repoPath) html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(meta.repoPath) + '</div>';
     html += '<div class="build-card-meta">';
     html += '<span>ID: ' + esc(b.id) + '</span>';
     html += '<span>Started: ' + fmtTime(b.startedAt) + '</span>';
@@ -1052,7 +1057,6 @@ function renderDetail() {
   if (state.totalCostUsd !== undefined) html += '<span>Cost <span class="val">' + fmtCost(state.totalCostUsd) + '</span></span>';
   html += '<span>Elapsed <span class="val" id="detail-elapsed">' + elapsed + '</span></span>';
   if (b.exitCode !== null && b.exitCode !== undefined) html += '<span>Exit <span class="val">' + b.exitCode + '</span></span>';
-  if (b.repoUrl) html += '<span>Repo <span class="val">' + esc(b.repoUrl) + '</span></span>';
 
   var completedCount = (state.tasksCompleted || []).length;
   var failedCount = (state.tasksFailed || []).length;
@@ -1062,6 +1066,32 @@ function renderDetail() {
     if (failedCount > 0) html += '<span>Failed <span class="val" style="color:var(--red)">' + failedCount + '</span></span>';
   }
   html += '</div>';
+
+  // Build metadata section
+  var meta = state._buildMeta || (b._buildMeta) || {};
+  if (meta.repoPath || meta.model) {
+    html += '<div class="detail-summary" style="margin-top:6px;font-size:11px;">';
+    if (meta.repoPath) html += '<span>Project <span class="val">' + esc(meta.repoPath) + '</span></span>';
+    if (meta.specPath) html += '<span>Spec <span class="val">' + esc(meta.specPath) + '</span></span>';
+    if (meta.mode) {
+      var modeStr = meta.mode;
+      if (meta.mode === 'clone' && meta.repoUrl) modeStr += ' from ' + meta.repoUrl;
+      html += '<span>Mode <span class="val">' + esc(modeStr) + '</span></span>';
+    }
+    if (meta.model && meta.model !== 'unknown') html += '<span>Model <span class="val">' + esc(meta.model) + '</span></span>';
+    if (meta.nixMode) html += '<span>Nix <span class="val">' + esc(meta.nixMode) + '</span></span>';
+    if (meta.workflow) html += '<span>Workflow <span class="val">' + esc(meta.workflow) + '</span></span>';
+    if (meta.gitEnabled !== undefined) {
+      html += '<span>Git <span class="val">' + (meta.gitEnabled ? 'enabled' : 'disabled') + '</span></span>';
+    }
+    if (meta.budgetGlobal) {
+      var budgetParts = [];
+      if (meta.budgetGlobal.max_iterations) budgetParts.push(meta.budgetGlobal.max_iterations + ' iterations');
+      if (meta.budgetGlobal.max_cost) budgetParts.push('$' + meta.budgetGlobal.max_cost.toFixed(2) + ' max');
+      if (budgetParts.length > 0) html += '<span>Budget <span class="val">' + esc(budgetParts.join(', ')) + '</span></span>';
+    }
+    html += '</div>';
+  }
 
   // Second row: aggregate stats
   var totalIters = 0;
