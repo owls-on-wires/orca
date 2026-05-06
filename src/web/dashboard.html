@@ -879,7 +879,56 @@ function renderDetail() {
     html += '<span>Tasks <span class="val">' + completedCount + '/' + totalTasks + '</span></span>';
     if (failedCount > 0) html += '<span>Failed <span class="val" style="color:var(--red)">' + failedCount + '</span></span>';
   }
-  html += '</div></div>';
+  html += '</div>';
+
+  // Second row: aggregate stats
+  var totalIters = 0;
+  var taskKeys = Object.keys(tasks);
+  taskKeys.forEach(function(id) {
+    totalIters += (tasks[id].iteration || 0);
+  });
+  var avgIters = completedCount > 0 ? (totalIters / completedCount) : 0;
+  var elapsedSec = b.startedAt ? (Date.now() - new Date(b.startedAt).getTime()) / 1000 : 0;
+  var elapsedMin = elapsedSec / 60;
+  var costRate = elapsedMin > 0 && state.totalCostUsd ? (state.totalCostUsd / elapsedMin) : 0;
+
+  // Per-stage cost breakdown from all task histories
+  var stageCosts = {};
+  taskKeys.forEach(function(id) {
+    var t = tasks[id];
+    if (t && t.history) {
+      t.history.forEach(function(h) {
+        if (h.label) {
+          stageCosts[h.label] = (stageCosts[h.label] || 0) + (h.costUsd || 0);
+        }
+      });
+    }
+  });
+
+  if (taskKeys.length > 0) {
+    html += '<div class="detail-summary" style="margin-top:6px;">';
+    html += '<span>Iterations <span class="val">' + totalIters + '</span></span>';
+    if (completedCount > 0) {
+      html += '<span>Avg iters <span class="val">' + avgIters.toFixed(1) + '</span></span>';
+    }
+    if (costRate > 0) {
+      html += '<span>Rate <span class="val">' + fmtCost(costRate) + '/min</span></span>';
+    }
+    html += '</div>';
+
+    // Per-stage cost breakdown
+    var stageLabels = Object.keys(stageCosts);
+    if (stageLabels.length > 0) {
+      html += '<div class="detail-summary" style="margin-top:4px;font-size:11px;">';
+      var stagePills = stageLabels.map(function(label) {
+        return esc(label) + ' <span class="val">' + fmtCost(stageCosts[label]) + '</span>';
+      });
+      html += '<span>' + stagePills.join(' | ') + '</span>';
+      html += '</div>';
+    }
+  }
+
+  html += '</div>';
 
   // Task list — show all tasks from _pendingTasks, with pending state for unstarted ones
   var taskIds = state._pendingTasks || Object.keys(tasks);
