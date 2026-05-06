@@ -6,6 +6,7 @@
 # history[], eval_result.json, JSONL logs) in the dashboard detail view.
 # Currently the detail view is a raw stdout dump with progress bars.
 #
+# Workflow: develop → deploy → qa (no eval stage — QA is the gate)
 # All tasks target src/server.ts and src/web/dashboard.html unless noted.
 # ---------------------------------------------------------------------------
 
@@ -16,12 +17,6 @@
   budget:
     max_iterations: 6
     max_cost: 20.0
-  eval:
-    command: >-
-      grep -q 'mode.*clone\|mode.*dir\|"clone"\|"local"' src/server.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
   variables:
     description: >
       POST /builds currently accepts either `repo` (clone mode) or `dir` (local
@@ -52,17 +47,16 @@
       If both `repo` and `dir` are provided (regardless of mode), return 400
       to prevent confusion.
 
-      Update the dashboard.html create build form to include a mode selector
-      (radio buttons: "Clone repository" / "Local directory") and send the
-      correct mode field. The repo URL input should show when clone is selected,
-      a directory path input when local is selected.
+      The dashboard.html create build form has ALREADY been updated with mode
+      radio buttons ("Clone repository" / "Local directory"), toggleModeFields(),
+      and the submitBuild() function sends the mode field. Do NOT modify the
+      form — only change the server-side handler in src/server.ts.
 
       Update the help text printed on server startup to reflect the new API.
     develop_focus:
       - "Add mode field validation in POST /builds handler"
       - "Return 400 with clear error when mode is missing or invalid"
       - "Reject requests with both repo and dir set"
-      - "Update dashboard.html form with mode radio selector"
       - "Update server startup help text"
 
 - id: conn_indicator_fix
@@ -72,13 +66,6 @@
   budget:
     max_iterations: 5
     max_cost: 15.0
-  eval:
-    command: >-
-      grep -q 'footer\|bottom' src/web/dashboard.html &&
-      ! grep -q 'top: 8px' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 60
   variables:
     description: >
       Two bugs in dashboard.html:
@@ -105,15 +92,6 @@
   budget:
     max_iterations: 8
     max_cost: 30.0
-  eval:
-    command: >-
-      grep -q '_pendingTasks\|_totalTasks' src/server.ts &&
-      grep -q '_workflow' src/server.ts &&
-      grep -q '_recentLog\|readRecentLog\|jsonl' src/server.ts &&
-      grep -q '_evalResult\|eval_result' src/server.ts &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
   variables:
     description: >
       The monitor (src/display/web.ts) enriches state.json before pushing it
@@ -164,14 +142,6 @@
   stages:
     develop:
       max_turns: 200
-  eval:
-    command: >-
-      grep -q '_pendingTasks\|pendingTasks' src/web/dashboard.html &&
-      grep -q 'history\|stage-history\|stageHistory' src/web/dashboard.html &&
-      grep -q 'expandable\|collapse\|toggle' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
   variables:
     description: >
       Rework the task list in the dashboard detail view. Currently it only shows
@@ -216,13 +186,6 @@
   budget:
     max_iterations: 6
     max_cost: 20.0
-  eval:
-    command: >-
-      grep -q 'avgIter\|avg.*iter\|averageIter' src/web/dashboard.html &&
-      grep -q 'stageCost\|stage-cost\|per.*stage' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 60
   variables:
     description: >
       The build header currently shows: status, total cost, elapsed, tasks X/Y.
@@ -255,13 +218,6 @@
   budget:
     max_iterations: 8
     max_cost: 25.0
-  eval:
-    command: >-
-      grep -q '_evalResult\|evalResult\|test.*pass\|passing' src/web/dashboard.html &&
-      grep -q 'failed.*test\|failing.*test\|fail-list' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 60
   variables:
     description: >
       The server now injects _evalResults (Record<taskId, EvalResult>) into the
@@ -303,13 +259,6 @@
   stages:
     develop:
       max_turns: 200
-  eval:
-    command: >-
-      grep -q '_recentLog\|recentLog\|renderLog\|log-entry.*tool' src/web/dashboard.html &&
-      grep -q 'invoke_start\|invoke_end\|tool_use' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 120
   variables:
     description: >
       The output log panel in the dashboard detail view currently shows raw
@@ -329,11 +278,11 @@
          - tool_name, tool_input (for tool_use events)
 
       2. Render events using the same format as monitor.html's renderLog():
-         - invoke_start: green, "▶ {label} started ({model})"
-         - invoke_end: yellow, "■ {label} done — {turns} turns, ${cost}, {duration}"
-         - tool_use: cyan, "• {tool_name} {key_arg}" where key_arg is:
-           Read/Write/Edit → file_path, Bash → command (truncated),
-           Grep → pattern, Glob → pattern
+         - invoke_start: green, ">> {label} started ({model})"
+         - invoke_end: yellow, "|| {label} done -- {turns} turns, ${cost}, {duration}"
+         - tool_use: cyan, "* {tool_name} {key_arg}" where key_arg is:
+           Read/Write/Edit -> file_path, Bash -> command (truncated),
+           Grep -> pattern, Glob -> pattern
          - Timestamp prefix in dim text
 
       3. Keep the raw stdout log as a fallback tab/toggle: "Activity" | "Raw Output".
@@ -341,7 +290,7 @@
 
       4. Auto-scroll to bottom on new entries. Show entry count in header.
 
-      Copy the renderLog function and log-entry CSS from monitor.html — it
+      Copy the renderLog function and log-entry CSS from monitor.html -- it
       already handles this exact rendering.
     develop_focus:
       - "Render _recentLog JSONL events with typed formatting"
@@ -357,13 +306,6 @@
   budget:
     max_iterations: 6
     max_cost: 20.0
-  eval:
-    command: >-
-      grep -q 'stuck\|outputHash\|output-hash' src/web/dashboard.html &&
-      grep -q 'warning\|yellow\|red.*progress\|bar-warn\|bar-danger' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 60
   variables:
     description: >
       The iteration and budget progress bars are always blue (var(--bar-fill)).
@@ -383,7 +325,7 @@
       - If the last 2+ entries for a loop stage have identical non-null
         outputHash values, the task is stuck (producing the same output).
       - Show a "stuck" badge on the task card in orange/yellow:
-        "⟳ stuck — same output for N iterations"
+        "stuck -- same output for N iterations"
       - This is the same detection logic as detectStuck() in supervisor.ts,
         replicated client-side for display purposes.
 
@@ -400,14 +342,6 @@
   budget:
     max_iterations: 8
     max_cost: 25.0
-  eval:
-    command: >-
-      grep -q 'repoPath\|projectDir\|project_dir' src/web/dashboard.html &&
-      grep -q 'nixMode\|nix.*mode\|nix.*type\|nix-info' src/web/dashboard.html &&
-      grep -q 'model\|workflow' src/web/dashboard.html &&
-      bun test 2>&1
-    parser: exit_code
-    timeout: 60
   variables:
     description: >
       The build list and detail views show minimal metadata — just name, status,
@@ -429,7 +363,7 @@
           nixMode: string | null,    // "flake" | "packages" | "shell.nix" | "none"
                                      // derive from the NixConfig + what buildNixCommand resolved
           taskCount: number,         // from _totalTasks (already computed)
-          workflow: string,          // short summary like "eval → develop (post: deploy, qa)"
+          workflow: string,          // short summary like "develop -> deploy -> qa"
           gitEnabled: boolean,       // from config.git?.enabled
           budgetGlobal: { max_iterations: number, max_cost: number } | null
         }
@@ -451,7 +385,7 @@
         Mode: local (or clone from https://...)
         Model: opus
         Nix: flake (or packages, shell.nix, none)
-        Workflow: eval → develop (post: deploy, qa)
+        Workflow: develop -> deploy -> qa
         Git: enabled, snapshot before develop
         Budget: 10 iterations, $50.00 max
       - Use the existing dim text styling, keep it compact (two-column grid or
