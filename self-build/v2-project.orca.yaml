@@ -1,0 +1,190 @@
+name: orca-v2-build
+project_dir: ..
+model: opus
+
+tasks:
+  file: v2-graph-tasks.yaml
+
+eval:
+  command: "bun test src/v2/ 2>&1"
+  parser: exit_code
+  timeout: 120
+
+# Default workflow: develop + unit tests only
+workflow:
+  loop:
+    - develop
+    - eval
+
+# Named workflows — tasks reference these via `workflow: full`
+workflows:
+  full:
+    loop:
+      - develop
+      - eval
+    post:
+      - deploy
+      - qa
+
+stages:
+  develop:
+    toolset: all
+    max_turns: 150
+    escalation: true
+    supervisor: true
+  deploy:
+    command: |
+      # Kill any leftover v2 test server
+      if [ -f /tmp/orca-v2-qa/server.pid ]; then
+        kill $(cat /tmp/orca-v2-qa/server.pid) 2>/dev/null || true
+        rm -f /tmp/orca-v2-qa/server.pid
+      fi
+      rm -rf /tmp/orca-v2-qa
+      mkdir -p /tmp/orca-v2-qa
+      # Start v2 server from source
+      bun run src/v2/server.ts --port 7072 --db /tmp/orca-v2-qa/test.db &
+      echo $! > /tmp/orca-v2-qa/server.pid
+    wait_for: "curl -sf http://localhost:7072/health"
+    wait_timeout: 30
+  qa:
+    toolset: all
+    max_turns: 80
+
+supervisor:
+  model: opus
+  max_turns: 40
+
+git:
+  enabled: true
+  snapshot_before: develop
+  commit_after: loop
+  commit_message: "orca-v2: {task_id} complete"
+
+scope:
+  writable: ["src/v2/**", "self-build/**"]
+  readable: ["**"]
+
+budget:
+  max_iterations: 10
+  max_cost: 50.0
+  stage_timeout: 600
+
+notifications:
+  on_escalation: true
+  on_task_complete: true
+  on_build_complete: true
+  on_budget_warning: 0.8
+  channels:
+    - type: command
+      run: "curl -s -d '{message}' https://ntfy.sh/one-zero-orca-v2-build"
+
+prompts:
+  stages:
+    develop: |
+      ## Important
+
+      All new code goes in src/v2/ — do NOT modify any existing v1 code outside
+      of src/v2/. Import reusable v1 modules via relative paths:
+        - ../engine/invoke (invokeSimple, InvokeOptions, InvokeResult)
+        - ../engine/eval (runEval)
+        - ../scope/ (checkToolUse, scopeSystemPrompt)
+        - ../config/prompts (resolvePrompt, resolveSchema, getSystemPrompt)
+        - ../templates/ (applyVars, buildTaskVars)
+        - ../notifications/ (notify)
+        - ../git/ (Git class)
+        - ../parsers/ (cargo, pytest, json, exit_code)
+
+      Use bun:sqlite for the database layer (built into Bun, no install needed).
+      Use js-yaml for YAML parsing (already installed).
+
+      ## Edge model
+
+      Every edge has exactly one condition string (pass, fail, max_turns,
+      timeout, cost_exceeded, stuck, error). There are no "always" or null
+      condition edges. When an action completes, it produces exactly one
+      condition. The executor finds the edge matching that condition and
+      follows it. Only one edge fires per action completion.
+
+      Sequential chaining uses "pass" edges: develop [pass] → eval [pass] → deploy.
+
+      ## QA feedback
+
+      If this is not the first iteration, check for a QA failure report:
+
+        cat .orca/tasks/{task_id}/qa.json 2>/dev/null
+
+      If the file exists and shows status "failed", read the issues field
+      and fix the problems described.
+
+      ## Compile check
+
+      Before finishing, run `bun test src/v2/` to verify your changes compile
+      and all v2 tests pass. Fix any failures before completing.
+    qa: |
+      ## Orca V2 Integration QA
+
+      You are testing the live orca v2 server at http://localhost:7072.
+      The deploy stage has started the server with a test database at
+      /tmp/orca-v2-qa/test.db.
+
+      Do NOT read orca source code. Do NOT run bun test. Only test the live
+      system by interacting with it via curl + jq.
+
+      ### Testing tools
+
+      ```bash
+      # Import a test config
+      curl -sf -X POST http://localhost:7072/import \
+        -H "Content-Type: application/json" \
+        -d '{"yaml": "name: test\ndefaults:\n  types:\n    develop: {type: command, command: \"echo hello\", edges: {pass: next}}\n    check: {type: command, command: \"echo done\", edges: {pass: complete}}\ntasks:\n  - id: t1\n    prompt: test\n    actions: [develop, check]\n"}'
+
+      # List actions
+      curl -sf http://localhost:7072/actions | jq .
+
+      # Get action detail
+      curl -sf http://localhost:7072/actions/t1.develop | jq .
+
+      # Update action params
+      curl -sf -X PATCH http://localhost:7072/actions/t1.develop \
+        -H "Content-Type: application/json" -d '{"params": {"timeout": 60}}'
+
+      # Edge operations
+      curl -sf http://localhost:7072/edges | jq .
+
+      # Executor control
+      curl -sf http://localhost:7072/executor/status | jq .
+      curl -sf -X POST http://localhost:7072/executor/pause
+      curl -sf -X POST http://localhost:7072/executor/resume
+
+      # Health
+      curl -sf http://localhost:7072/health | jq .
+      ```
+
+      ### What to test
+
+      Focus on the feature that was just implemented in the develop stage.
+      Read the task description (available at {description}) to understand
+      what changed.
+
+      Test 3-5 scenarios that exercise the new or modified functionality.
+      Also run a basic smoke test (health check, import config, verify
+      actions created) to catch regressions.
+
+      ### Cleanup
+
+      ALWAYS kill the test server when done, even if tests fail:
+      ```bash
+      if [ -f /tmp/orca-v2-qa/server.pid ]; then
+        kill $(cat /tmp/orca-v2-qa/server.pid) 2>/dev/null || true
+        rm -f /tmp/orca-v2-qa/server.pid
+      fi
+      rm -rf /tmp/orca-v2-qa
+      ```
+
+      ### Verdict
+
+      Return structured output:
+      - status: "passed" if all tests passed
+      - status: "failed" if any test failed
+      - summary: what was tested and results
+      - issues: specific failures (empty string if passed)

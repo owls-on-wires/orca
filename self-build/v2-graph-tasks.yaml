@@ -1,0 +1,1108 @@
+# ---------------------------------------------------------------------------
+# Orca v2 — Action Graph Rewrite
+# ---------------------------------------------------------------------------
+#
+# Rebuilds orca's orchestration around a flat action graph with conditional
+# edges, SQLite persistence, and an action-centric API.
+#
+# Edge model: every edge has exactly one condition string (pass, fail,
+# max_turns, timeout, cost_exceeded, stuck, error). No "always"/null edges.
+# When an action completes, it produces one condition. The executor finds
+# the matching edge and follows it. Only one edge fires.
+#
+# Reuses existing modules: invoke, eval, git, scope, templates, parsers,
+# prompts, nix, notifications.
+#
+# Tasks with `workflow: full` use deploy+qa for live API testing against
+# the v2 server on port 7072. All other tasks use unit tests only.
+# ---------------------------------------------------------------------------
+
+# ===========================
+# PHASE 1: Data Model
+# ===========================
+
+- id: v2_types
+  title: "V2 type definitions and helpers"
+  tags: [phase1, types]
+  depends_on: []
+  budget:
+    max_iterations: 6
+    max_cost: 20.0
+  variables:
+    description: >
+      Create src/v2/schema.ts with v2 type definitions and helper functions.
+
+      Types to define:
+
+      ActionType = "agent" | "command"
+
+      EdgeCondition = "pass" | "fail" | "max_turns" | "timeout"
+                    | "cost_exceeded" | "stuck" | "error"
+
+      ActionStatus = "pending" | "running" | "completed" | "failed"
+                   | "skipped" | "waiting"
+
+      ActionConfig {
+        id: string
+        type: ActionType
+        status: ActionStatus
+        params: Record<string, unknown>
+        output: ActionOutput | null
+        tags: string[]
+        cost_usd: number
+        iteration: number
+        created_at: string
+        updated_at: string
+        started_at: string | null
+        completed_at: string | null
+      }
+
+      ActionOutput {
+        status: string            // "passed", "failed", etc.
+        summary: string
+        notes?: string            // free-form guidance for next action
+        [key: string]: unknown    // type-specific fields (issues, etc.)
+      }
+
+      EdgeConfig {
+        id?: number
+        from_action: string
+        to_action: string
+        condition: EdgeCondition   // REQUIRED — no null/always edges
+      }
+
+      ActionTypeDefaults {
+        type: ActionType
+        params?: Record<string, unknown>
+        edges?: Partial<Record<EdgeCondition, string>>  // routing shorthands
+      }
+
+      OrcaV2Config {
+        name: string
+        project_dir?: string
+        model?: string
+        defaults?: {
+          types?: Record<string, ActionTypeDefaults>
+        }
+        tasks: V2TaskConfig[]
+      }
+
+      V2TaskConfig {
+        id: string
+        prompt: string
+        actions: string[]
+        depends_on?: string[]
+        tags?: string[]
+        budget?: { max_iterations?: number, max_cost?: number }
+        variables?: Record<string, unknown>
+      }
+
+      GraphDelta {
+        type: "add_action" | "remove_action" | "update_params"
+            | "add_edge" | "remove_edge"
+        action_id?: string
+        action?: Partial<ActionConfig>
+        params?: Record<string, unknown>
+        edge?: EdgeConfig
+        edge_id?: number
+      }
+
+      Also export helper functions:
+        createAction(overrides: Partial<ActionConfig>): ActionConfig
+          — factory with sensible defaults (status=pending, cost=0, etc.)
+        createEdge(from: string, to: string, condition: EdgeCondition): EdgeConfig
+        isTerminalCondition(condition: EdgeCondition): boolean
+          — returns true for pass (when no outgoing pass edge = done)
+
+      Write tests in src/v2/schema.test.ts:
+        - createAction produces valid defaults
+        - createEdge produces correct shape
+        - EdgeCondition values are exhaustive
+        - GraphDelta types cover all mutation cases
+    develop_focus:
+      - "Define all types including GraphDelta"
+      - "Export factory/helper functions"
+      - "Write tests for helpers"
+
+- id: v2_db
+  title: "SQLite database layer"
+  tags: [phase1, db]
+  depends_on: [v2_types]
+  budget:
+    max_iterations: 10
+    max_cost: 40.0
+  variables:
+    description: >
+      Create src/v2/db.ts — SQLite persistence layer using bun:sqlite.
+
+      Database file: configurable path (default: .orca/orca.db).
+
+      Tables:
+
+      actions (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        params JSON NOT NULL DEFAULT '{}',
+        output JSON,
+        tags JSON NOT NULL DEFAULT '[]',
+        cost_usd REAL DEFAULT 0,
+        iteration INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT
+      )
+
+      edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_action TEXT NOT NULL REFERENCES actions(id) ON DELETE CASCADE,
+        to_action TEXT NOT NULL REFERENCES actions(id) ON DELETE CASCADE,
+        condition TEXT NOT NULL,          -- REQUIRED, no nulls
+        UNIQUE(from_action, to_action, condition)
+      )
+
+      history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action_id TEXT NOT NULL REFERENCES actions(id) ON DELETE CASCADE,
+        iteration INTEGER,
+        event_type TEXT NOT NULL,
+        data JSON,
+        timestamp TEXT NOT NULL
+      )
+
+      Indexes: actions(status), actions(type), edges(to_action),
+      edges(from_action), history(action_id).
+
+      Enable foreign_keys pragma and WAL mode.
+
+      Database class methods:
+        constructor(dbPath: string) — open/create, run schema
+        close()
+
+        // Actions
+        insertAction(action: ActionConfig): void
+        getAction(id: string): ActionConfig | null
+        updateAction(id: string, updates: Partial<ActionConfig>): void
+        deleteAction(id: string): void
+        listActions(filters?: { status?, type?, tag? }): ActionConfig[]
+        getReadyActions(): ActionConfig[]
+
+        // Edges
+        insertEdge(edge: EdgeConfig): number
+        deleteEdge(id: number): void
+        getEdgesFrom(actionId: string): EdgeConfig[]
+        getEdgesTo(actionId: string): EdgeConfig[]
+        getEdgesByCondition(actionId: string, condition: EdgeCondition): EdgeConfig[]
+
+        // History
+        appendHistory(actionId: string, eventType: string, data?: unknown): void
+        getHistory(actionId: string, limit?: number): HistoryEntry[]
+
+        // Bulk
+        updateActionsByTag(tag: string, updates: Partial<ActionConfig>): number
+        getActionsByTag(tag: string): ActionConfig[]
+
+      getReadyActions query — pending actions with ALL incoming edges
+      satisfied. An incoming edge is satisfied when the from_action has
+      status "completed" AND that action's output.status matches the edge
+      condition. This is the key semantic: edges are conditional on the
+      predecessor's output, not just its completion.
+
+      ```sql
+      SELECT a.* FROM actions a
+      WHERE a.status = 'pending'
+      AND NOT EXISTS (
+        SELECT 1 FROM edges e
+        WHERE e.to_action = a.id
+        AND NOT EXISTS (
+          SELECT 1 FROM actions dep
+          WHERE dep.id = e.from_action
+          AND dep.status = 'completed'
+          AND json_extract(dep.output, '$.status') =
+            CASE e.condition
+              WHEN 'pass' THEN 'passed'
+              WHEN 'fail' THEN 'failed'
+              ELSE e.condition
+            END
+        )
+      );
+      ```
+
+      Actually, simpler: the EXECUTOR handles edge condition matching, not
+      the DB query. The DB just tracks which actions have fired edges.
+      Better approach: add a `fired` boolean column to edges, or track
+      separately. Simplest: getReadyActions returns pending actions that
+      have NO incoming edges from non-completed actions. The executor
+      handles condition routing when an action completes (it sets the
+      target to "pending" only if the condition matches).
+
+      Revised getReadyActions:
+      ```sql
+      SELECT a.* FROM actions a
+      WHERE a.status = 'pending'
+      AND NOT EXISTS (
+        SELECT 1 FROM edges e
+        JOIN actions dep ON dep.id = e.from_action
+        WHERE e.to_action = a.id
+        AND dep.status NOT IN ('completed', 'failed', 'skipped')
+      );
+      ```
+
+      Wait — this is wrong too. An action should be ready when all its
+      INCOMING dependency edges have been satisfied by a completed
+      predecessor. But edges are conditional — `eval [fail] → develop`
+      doesn't mean develop depends on eval in a DAG sense. It means
+      "if eval fails, activate develop."
+
+      The right model: actions start in status "pending" only when they're
+      explicitly activated by the executor following an edge. Initial
+      actions (no incoming edges) start as "pending". All others start as
+      a new status — let's call it "inactive" — and get set to "pending"
+      by the executor when an incoming edge fires.
+
+      Add "inactive" to ActionStatus. Actions expanded from config start
+      as "inactive" unless they have no incoming edges (those start as
+      "pending").
+
+      getReadyActions simply returns: status = "pending". The executor
+      handles all activation via edge following.
+
+      This is much cleaner. No complex SQL for dependency resolution.
+
+      Write thorough tests in src/v2/db.test.ts:
+        - Insert/get/update/delete actions
+        - JSON params querying
+        - Insert/delete edges, verify cascading
+        - Tag-based queries and bulk updates
+        - History append and retrieval
+        - getReadyActions returns only pending actions
+        - Edge condition column is NOT NULL
+    develop_focus:
+      - "Create SQLite schema with all 3 tables + indexes"
+      - "Enable foreign_keys and WAL mode"
+      - "Implement all CRUD methods"
+      - "getReadyActions returns status=pending actions"
+      - "Tag-based filtering with json_each"
+      - "Write thorough tests"
+
+- id: v2_config
+  title: "V2 config loader and task expansion"
+  tags: [phase1, config]
+  depends_on: [v2_types, v2_db]
+  budget:
+    max_iterations: 10
+    max_cost: 40.0
+  variables:
+    description: >
+      Create src/v2/config.ts — loads v2 YAML config and expands tasks into
+      actions + edges in the database.
+
+      The loader:
+
+      1. Parse YAML string into OrcaV2Config (use js-yaml, already installed)
+
+      2. For each task, expand task.actions into action records:
+         - Action ID = "{task.id}.{action_type}" (e.g., "auth.develop")
+         - Type from defaults.types[action_type].type
+         - Params merged from: defaults.types[action_type].params + task overrides
+         - For agent actions, inject task.prompt into params.prompt
+         - Tags auto-generated: ["type:{action_type}", "task:{task.id}",
+           "project:{config.name}"] + task.tags
+         - Budget from task.budget merged into params
+         - Initial status: first action in each task with no depends_on = "pending".
+           All others = "inactive".
+
+      3. Generate edges from the action list + type defaults:
+         - For each action in the list, look up its type defaults' edges map
+         - Resolve routing shorthands:
+           "first" → "{task_id}.{first_action_in_list}"
+           "next" → "{task_id}.{next_action_in_list}"
+           "complete" → skip (no edge created, action completion = done)
+           Any string matching a type name in defaults.types → auto-create
+             a "{task_id}.{type_name}" action and edge to it
+           Any other string → literal action ID
+         - ALL edges have a condition. No null conditions.
+         - Default if no edges map: agent actions get {pass: next, fail: first},
+           command actions get {pass: next, fail: first}
+
+      4. Cross-task dependencies:
+         depends_on: [auth] creates a "pass" edge from auth's terminal
+         action (last in its actions list) to this task's first action.
+         The first action of the dependent task starts as "inactive" and
+         gets activated when the edge fires.
+
+      5. Insert all actions and edges into the Database in a transaction.
+
+      Example: task auth, actions [develop, eval, deploy, qa]
+      With defaults.types.eval.edges: { pass: next, fail: first }
+      And defaults.types.qa.edges: { pass: complete, fail: first, max_turns: supervisor }
+
+      Actions created:
+        auth.develop (pending — first, no deps)
+        auth.eval (inactive)
+        auth.deploy (inactive)
+        auth.qa (inactive)
+        auth.supervisor (inactive, auto-created from "supervisor" shorthand)
+
+      Edges created:
+        auth.develop → auth.eval [pass]
+        auth.eval → auth.deploy [pass]
+        auth.eval → auth.develop [fail]
+        auth.deploy → auth.qa [pass]
+        auth.qa → auth.develop [fail]
+        auth.qa → auth.supervisor [max_turns]
+
+      Function: expandConfig(yamlString: string, db: Database): OrcaV2Config
+        Returns the parsed config (for reference), side effect: populates DB.
+
+      Write tests in src/v2/config.test.ts:
+        - Simple 2-action task expansion
+        - Complex 5-action task with all edge types
+        - Cross-task dependency edge
+        - Auto-tagging verification
+        - Supervisor auto-creation from routing shorthand
+        - First action is "pending", rest are "inactive"
+        - Invalid config errors (missing type in defaults, unknown action type)
+        - Default edges when no edges map specified
+    develop_focus:
+      - "Parse YAML into OrcaV2Config"
+      - "Expand tasks into actions with correct initial status"
+      - "Generate edges from type defaults with shorthand resolution"
+      - "Auto-create actions for type-name shorthands (supervisor, human)"
+      - "Cross-task dependency edges"
+      - "Auto-tagging"
+      - "Write comprehensive tests"
+
+# ===========================
+# PHASE 2: Executor
+# ===========================
+
+- id: v2_action_runner
+  title: "Action runner — execute a single action"
+  tags: [phase2, executor]
+  depends_on: [v2_db]
+  budget:
+    max_iterations: 10
+    max_cost: 40.0
+  variables:
+    description: >
+      Create src/v2/action-runner.ts — runs a single action and returns a
+      classified result.
+
+      Types:
+
+      ActionResult {
+        condition: EdgeCondition   // pass, fail, max_turns, timeout, etc.
+        output: ActionOutput       // { status, summary, notes, ... }
+        cost_usd: number
+        duration_ms: number
+        num_turns: number
+      }
+
+      WaitingResult {
+        waiting: true              // signals executor to set status=waiting
+        output: ActionOutput       // partial output (notification sent, etc.)
+      }
+
+      RunOptions {
+        projectDir: string
+        model?: string
+        scope?: ScopeConfig
+        logPath?: string
+      }
+
+      async function runAction(
+        action: ActionConfig,
+        predecessorOutputs: { actionId: string, output: ActionOutput }[],
+        options: RunOptions
+      ): Promise<ActionResult | WaitingResult>
+
+      For agent actions (type: "agent"):
+        1. Build prompt:
+           - Start with params.prompt (the task description)
+           - Prepend predecessor output injection (see format below)
+           - Append params.system_prompt if present
+        2. Call invokeSimple() from ../engine/invoke.ts
+           Pass: prompt, projectDir, model, toolset, maxTurns, outputSchema,
+                 scope, logPath, label
+        3. Classify the SDK result:
+           - IMPORTANT: always extract cost_usd, num_turns, duration_ms from
+             the result message regardless of subtype. Both "success" and
+             "error_*" variants have these fields. This fixes the v1 bug
+             (see docs/bugs.md).
+           - subtype "success" → check output.status:
+             "passed" → condition = "pass"
+             "failed" → condition = "fail"
+             other/missing → condition = "fail"
+           - subtype "error_max_turns" → condition = "max_turns"
+           - subtype "error_during_execution" → condition = "error"
+           - subtype "error_max_budget_usd" → condition = "cost_exceeded"
+        4. Return ActionResult
+
+      For command actions (type: "command"):
+        1. Interpolate template variables in params.command using applyVars
+        2. Run via Bun.spawn with timeout from params.timeout (default 120s)
+        3. If params.wait_for set, poll health check every 5s until success
+           or params.wait_timeout exceeded
+        4. Classify:
+           exit 0 → condition = "pass"
+           exit != 0 → condition = "fail"
+           timeout exceeded → condition = "timeout"
+        5. Build ActionOutput from stdout/stderr
+        6. If params.wait_for_response is true:
+           Run the command, then return WaitingResult instead of ActionResult
+        7. Return ActionResult
+
+      Predecessor output injection format:
+        ## Previous actions
+        ### auth.eval (fail)
+        Summary: 3 tests failing in src/auth.test.ts
+        Notes: Run `bun test src/auth.test.ts` to see failures
+
+      Reuse from v1:
+        - ../engine/invoke.ts (invokeSimple, InvokeOptions, InvokeResult)
+        - ../scope/ (ScopeConfig, checkToolUse, scopeSystemPrompt)
+        - ../config/prompts.ts (resolvePrompt, resolveSchema, getSystemPrompt)
+        - ../templates/ (applyVars)
+
+      Write tests in src/v2/action-runner.test.ts:
+        - Command: exit 0 → pass, exit 1 → fail
+        - Command: timeout → timeout condition
+        - Command: wait_for_response → WaitingResult
+        - Predecessor output injection: verify prompt contains predecessor info
+        - SDK subtype classification for all conditions
+        - Cost/turns always extracted (even on error subtypes)
+    develop_focus:
+      - "Agent action: invoke with prompt injection"
+      - "Command action: subprocess with timeout"
+      - "Fix v1 bug: extract cost/turns from all SDK subtypes"
+      - "WaitingResult for wait_for_response"
+      - "Predecessor output injection formatting"
+      - "Write tests for all paths"
+
+- id: v2_executor
+  title: "Serial scheduler / executor"
+  tags: [phase2, executor]
+  depends_on: [v2_action_runner, v2_config]
+  budget:
+    max_iterations: 15
+    max_cost: 60.0
+  variables:
+    description: >
+      Create src/v2/executor.ts — serial scheduler driving the action graph.
+
+      class Executor {
+        constructor(db: Database, options: ExecutorOptions)
+        async run(): Promise<void>     // run until idle
+        pause(): void
+        resume(): void
+        isPaused(): boolean
+        isIdle(): boolean
+      }
+
+      ExecutorOptions {
+        projectDir: string
+        model?: string
+        scope?: ScopeConfig
+        onActionStart?: (action: ActionConfig) => void
+        onActionEnd?: (action: ActionConfig, result: ActionResult) => void
+        onEdgeTraversed?: (from: string, to: string, condition: string) => void
+        onIdle?: () => void
+      }
+
+      The run() loop:
+
+      1. Query db for actions with status = "pending"
+         (getReadyActions just returns pending actions — activation is
+         handled by edge following, not by dependency resolution)
+      2. If none pending: idle, return
+      3. Pick one. Chain preference: if lastCompletedAction has a successor
+         that's now pending, pick that. Otherwise first pending by created_at.
+      4. Set status = "running", update started_at. Persist.
+      5. Collect predecessor outputs: query edges where to_action = this
+         action, for each get from_action's output. Pass to runAction.
+      6. Call runAction(action, predecessorOutputs, options)
+      7. If WaitingResult: set status = "waiting", persist. Go to step 1.
+      8. On ActionResult:
+         a. Update action: status = condition == "pass" ? "completed" : "failed",
+            output, cost_usd, completed_at. Persist.
+         b. Append to history table.
+         c. Call onActionEnd callback.
+         d. Route: find outgoing edges from this action matching
+            result.condition (db.getEdgesByCondition).
+         e. For each matching edge:
+            - Get target action
+            - If target is "inactive" or "completed" (for retry loops):
+              Set target to "pending". Increment target.iteration if it was
+              previously completed/failed (retry).
+            - Check max_iterations: if target.iteration >= target.params.max_iterations,
+              instead look for a "cost_exceeded" or "stuck" edge and follow that.
+            - Call onEdgeTraversed callback.
+         f. If no edge matches: action stays in its terminal state. If there
+            are other pending actions, continue. If not, idle.
+      9. Check pause flag. If paused, return.
+      10. Go to step 1.
+
+      Budget tracking: before running an action, compute total cost for the
+      task: sum cost_usd of all actions with matching task tag. If over the
+      task's max_cost (from params), produce cost_exceeded without running.
+
+      Stuck detection: after an action completes, check if the last N
+      (default 3) completions of this same action (from history) have
+      identical output hashes. If stuck, override the condition to "stuck"
+      and follow stuck edges instead.
+
+      Edge model: exactly one condition per edge. When an action produces
+      condition "fail", the executor finds edges from this action with
+      condition "fail" and activates their targets. "pass" edges are NOT
+      followed when the condition is "fail". Only one condition matches
+      at a time.
+
+      Write tests in src/v2/executor.test.ts:
+        - Linear chain: A [pass]→ B [pass]→ C, all pass → all completed
+        - Retry loop: dev [pass]→ eval [fail]→ dev [pass]→ eval [pass]→ done
+        - Max iterations: retry loop exceeds limit → action fails
+        - Chain preference: two independent chains, executor finishes one before starting other
+        - WaitingResult: action enters waiting, executor moves to next pending
+        - Budget exceeded: total cost over limit → cost_exceeded condition
+        - Stuck detection: same output 3 times → stuck condition
+        - Pause/resume: executor stops between actions when paused
+        - Idle callback when nothing pending
+        - Inactive actions don't run until activated by edge
+    develop_focus:
+      - "Serial scheduler loop with chain preference"
+      - "Edge condition matching — only one condition fires"
+      - "Activate target actions (inactive → pending) on edge fire"
+      - "Iteration counting on retry"
+      - "Max iterations check"
+      - "Budget tracking per task tag"
+      - "Stuck detection via output hashing"
+      - "WaitingResult handling"
+      - "Pause/resume"
+      - "Comprehensive tests"
+
+# ===========================
+# PHASE 3: Server + API
+# ===========================
+
+- id: v2_server_core
+  title: "Action-centric HTTP server"
+  tags: [phase3, server]
+  depends_on: [v2_executor]
+  workflow: full
+  budget:
+    max_iterations: 15
+    max_cost: 60.0
+  variables:
+    description: >
+      Create src/v2/server.ts — HTTP server using Bun.serve() with
+      action-centric REST endpoints.
+
+      The server module must be runnable standalone:
+        bun run src/v2/server.ts --port 7072 --db /path/to/db
+
+      Parse --port and --db from process.argv when run directly.
+      Also export startServer(options) for programmatic use.
+
+      Endpoints:
+
+      POST /import
+        Body: { yaml: "..." } or { config: OrcaV2Config }
+        Expand via expandConfig(), insert into DB.
+        Response: { actions: string[], edges: number }
+
+      GET /actions
+        Query: ?tag=X&status=Y&type=Z (all optional, combinable)
+        Response: ActionConfig[]
+
+      GET /actions/:id
+        Response: { action, edges: { from: [], to: [] }, history: [] }
+
+      PATCH /actions/:id
+        Body: { params?: {}, tags?: [], status?: string }
+        Response: updated ActionConfig
+
+      DELETE /actions/:id
+        Response: { deleted: true }
+
+      POST /actions/:id/retry
+        Reset to pending, clear output, increment iteration.
+        Response: { status: "pending" }
+
+      POST /actions/:id/skip
+        Set status = "skipped".
+        Response: { status: "skipped" }
+
+      POST /actions/:id/respond
+        For waiting actions. Body: { status, summary, notes? }
+        Sets output, status = "completed". Wakes executor.
+        Response: { status: "completed" }
+
+      PATCH /actions?tag=X
+        Bulk update. Body: { params?: {} }
+        Response: { updated: number }
+
+      POST /edges
+        Body: { from_action, to_action, condition }
+        Response: EdgeConfig with id
+
+      DELETE /edges/:id
+        Response: { deleted: true }
+
+      GET /defaults / PATCH /defaults
+        In-memory type defaults. PATCH merges.
+
+      POST /executor/pause
+      POST /executor/resume
+      GET /executor/status
+        Response: { state, active_action?, pending, total }
+
+      GET /health
+        Response: { version, uptime, actions: { total, pending, running, ... } }
+
+      GET /
+        Serve placeholder HTML for now.
+
+      CORS headers on all responses. JSON errors: { error: string }.
+
+      Start executor loop in background on server start. Executor callbacks
+      (onActionStart, onActionEnd, onEdgeTraversed) will be wired to SSE
+      in the next task.
+
+      Write tests in src/v2/server.test.ts:
+        - POST /import creates actions and edges
+        - GET /actions with tag/status filters
+        - PATCH /actions/:id updates params
+        - DELETE cascades
+        - POST /retry resets action
+        - POST /respond completes waiting action
+        - Bulk PATCH by tag
+        - Edge CRUD
+        - Executor pause/resume
+        - 404 for missing actions, 400 for invalid bodies
+    develop_focus:
+      - "Standalone runnable: parse --port/--db from argv"
+      - "Route dispatch in Bun.serve fetch handler"
+      - "All action CRUD endpoints"
+      - "Edge CRUD"
+      - "POST /import with config expansion"
+      - "POST /respond for waiting actions"
+      - "Bulk PATCH by tag"
+      - "Executor lifecycle (start on serve, pause/resume)"
+      - "Write tests for all endpoints"
+
+- id: v2_sse
+  title: "SSE event streaming"
+  tags: [phase3, server]
+  depends_on: [v2_server_core]
+  workflow: full
+  budget:
+    max_iterations: 8
+    max_cost: 30.0
+  variables:
+    description: >
+      Add SSE streaming to the v2 server.
+
+      GET /events
+        Global stream. Events:
+        - action_started: { action_id, type }
+        - action_completed: { action_id, condition, cost_usd }
+        - action_waiting: { action_id }
+        - edge_traversed: { from, to, condition }
+        - executor_state: { state, pending_count }
+
+      GET /actions/:id/events
+        Per-action stream, filtered.
+
+      Implementation:
+        - Set<ReadableStreamDefaultController> for connected clients
+        - Wire executor callbacks to broadcast
+        - sseEvent encoding: "event: X\ndata: JSON\n\n"
+        - Heartbeat comment every 30s
+        - Clean up disconnected clients on write failure
+
+      Write tests:
+        - Connect, trigger action, verify event
+        - Per-action filtering
+        - Client cleanup
+    develop_focus:
+      - "SSE client tracking and broadcast"
+      - "Wire executor callbacks to SSE"
+      - "Global and per-action streams"
+      - "Heartbeat"
+      - "Write tests"
+
+# ===========================
+# PHASE 4: Supervisor + Human
+# ===========================
+
+- id: v2_graph_ops
+  title: "Graph mutation operations"
+  tags: [phase4, supervisor]
+  depends_on: [v2_db]
+  budget:
+    max_iterations: 8
+    max_cost: 25.0
+  variables:
+    description: >
+      Create src/v2/graph-ops.ts — pure functions for graph mutation and
+      serialization.
+
+      Uses the GraphDelta type from schema.ts.
+
+      Functions:
+
+      applyDelta(db: Database, delta: GraphDelta): void
+        Validate then apply:
+        - add_action: ID must not exist, insert
+        - remove_action: cascade edges/history, delete
+        - update_params: must exist, json_set merge into params
+        - add_edge: both actions must exist, condition required
+        - remove_edge: edge must exist
+
+      applyDeltas(db: Database, deltas: GraphDelta[]): void
+        Apply list in order within a transaction. Rollback on error.
+
+      validateGraph(db: Database): string[]
+        Return issues: edges referencing missing actions, actions with
+        no outgoing edges and not completed, etc.
+
+      serializeGraphForPrompt(db: Database, taskTag?: string): string
+        Concise text for LLM consumption:
+          Actions:
+            auth.develop [agent, completed, $2.40] → auth.eval (pass)
+            auth.eval [command, failed] → auth.deploy (pass) | auth.develop (fail)
+          Recent history:
+            auth.develop completed (pass) — 45 turns, $2.40
+            auth.eval failed — "3 tests failing"
+
+      Write tests:
+        - Each delta type: apply, verify DB state
+        - applyDeltas rolls back on error
+        - Validation catches issues
+        - Serialization is readable and includes key info
+    develop_focus:
+      - "applyDelta for all 5 mutation types"
+      - "Transaction rollback in applyDeltas"
+      - "Graph validation"
+      - "LLM-readable graph serialization"
+      - "Write tests"
+
+- id: v2_supervisor
+  title: "Supervisor as graph-editing agent"
+  tags: [phase4, supervisor]
+  depends_on: [v2_graph_ops, v2_executor]
+  budget:
+    max_iterations: 10
+    max_cost: 40.0
+  variables:
+    description: >
+      Create src/v2/supervisor.ts — supervisor logic for the v2 model.
+
+      The supervisor is an agent action. When the executor encounters an
+      action whose type defaults came from a "supervisor" shorthand, it
+      calls buildSupervisorPrompt to construct the prompt, then runs it
+      as a normal agent action. After completion, it checks the output
+      for graph edits and applies them.
+
+      buildSupervisorPrompt(
+        db: Database,
+        triggerAction: ActionConfig,
+        triggerCondition: EdgeCondition,
+        taskTag: string
+      ): string
+
+      The prompt includes:
+        - What failed: trigger action's output + condition
+        - Graph state: serializeGraphForPrompt(db, taskTag)
+        - Task history: recent completions, iteration counts, costs
+        - Available mutations: list of GraphDelta types with examples
+        - Clear instructions: diagnose, produce edits, optionally retry
+
+      Create src/v2/prompts/supervisor.schema.json:
+      {
+        "type": "object",
+        "properties": {
+          "diagnosis": { "type": "string" },
+          "edits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": { "type": "string", "enum": ["add_action", "remove_action", "update_params", "add_edge", "remove_edge"] },
+                "action_id": { "type": "string" },
+                "params": { "type": "object" },
+                "edge": { "type": "object" }
+              },
+              "required": ["type"]
+            }
+          },
+          "retry_action": { "type": ["string", "null"] }
+        },
+        "required": ["diagnosis", "edits"]
+      }
+
+      handleSupervisorResult(db: Database, output: ActionOutput): void
+        Parse edits from output, apply via applyDeltas.
+        If retry_action specified, set that action to "pending".
+
+      Integration: the executor calls handleSupervisorResult after any
+      action tagged "type:supervisor" completes with status "pass".
+      Add a check in the executor's post-completion logic.
+
+      Write tests:
+        - Prompt includes graph state and failure context
+        - handleSupervisorResult applies deltas
+        - retry_action re-queues target
+        - Invalid deltas rejected gracefully (don't crash executor)
+    develop_focus:
+      - "buildSupervisorPrompt with full context"
+      - "Create supervisor.schema.json"
+      - "handleSupervisorResult: parse + apply deltas"
+      - "Executor integration for supervisor actions"
+      - "Write tests"
+
+- id: v2_human_action
+  title: "Human action type with wait_for_response"
+  tags: [phase4, human]
+  depends_on: [v2_server_core, v2_action_runner]
+  workflow: full
+  budget:
+    max_iterations: 8
+    max_cost: 30.0
+  variables:
+    description: >
+      Implement wait_for_response behavior end-to-end.
+
+      A human action is a command action with params.wait_for_response = true.
+
+      Flow:
+      1. Action runner runs the command (sends notification)
+      2. Returns WaitingResult
+      3. Executor sets status = "waiting", persists, continues to next
+      4. Action stays waiting until POST /actions/:id/respond
+      5. Server sets output from response body, status = "completed"
+      6. Executor picks up on next cycle, follows outgoing edges
+
+      Changes:
+      - src/v2/action-runner.ts: already handles WaitingResult (from v2_action_runner)
+      - src/v2/executor.ts: already handles WaitingResult (from v2_executor)
+      - src/v2/server.ts: POST /respond already exists (from v2_server_core)
+        Ensure it wakes the executor (call executor.resume() or set a flag)
+
+      What's new in this task:
+      - Template variable injection into the notification command:
+        {action_id}, {summary}, {condition}, {task_id}
+        Use applyVars from ../templates/
+      - End-to-end test: create action with wait_for_response, start executor,
+        verify it enters waiting, POST /respond, verify it completes and
+        edges are followed.
+
+      Write tests:
+        - Command runs, enters waiting state
+        - Executor continues past waiting action to other pending work
+        - POST /respond completes the action
+        - Edge routing follows response status
+        - Template variables injected into notification command
+    develop_focus:
+      - "Template variable injection in notification command"
+      - "End-to-end: create → wait → respond → complete → edge"
+      - "Verify executor continues past waiting actions"
+      - "Write tests"
+
+# ===========================
+# PHASE 5: CLI + Dashboard
+# ===========================
+
+- id: v2_cli
+  title: "V2 CLI commands"
+  tags: [phase5, cli]
+  depends_on: [v2_server_core, v2_executor]
+  budget:
+    max_iterations: 10
+    max_cost: 40.0
+  variables:
+    description: >
+      Create src/v2/cli.ts — v2 CLI entry point.
+
+      Must be compilable: bun build src/v2/cli.ts --compile --outfile bin/orca-v2
+
+      Commands:
+
+      orca-v2 serve [--port PORT] [--db PATH]
+        Start HTTP server + executor. Default port 7070, DB .orca/orca.db.
+
+      orca-v2 run <config.yaml> [--db PATH]
+        Load config, expand to actions, run executor locally (no HTTP).
+        Print progress to stdout. Block until idle.
+
+      orca-v2 import <config.yaml> [--db PATH]
+        Expand config, insert into DB. No execution.
+
+      orca-v2 status [--db PATH] [--tag TAG]
+        Show: total/pending/running/completed/failed/waiting counts.
+        Per-tag cost breakdown. Active action if any.
+
+      orca-v2 actions [--db PATH] [--tag TAG] [--status STATUS]
+        List actions matching filters.
+
+      orca-v2 pause / resume [--server URL]
+        Control executor via API (if server running) or error.
+
+      orca-v2 respond <action-id> <status> [--notes "..."] [--server URL]
+        Respond to a waiting action.
+
+      orca-v2 --version / --help
+
+      For "run" mode: create Database + Executor directly, no HTTP server.
+      Wire executor callbacks to stdout printing (simple progress display).
+
+      Write tests in src/v2/cli.test.ts:
+        - Flag parsing
+        - "run" loads config and creates actions in DB
+        - "status" reads DB and reports counts
+        - "import" populates DB without executing
+    develop_focus:
+      - "CLI flag parsing and command dispatch"
+      - "serve: start server + executor"
+      - "run: local execution, stdout progress"
+      - "import: expand config to DB"
+      - "status: read and summarize"
+      - "respond: complete waiting action"
+      - "Write tests"
+
+- id: v2_dashboard
+  title: "Action-centric web dashboard"
+  tags: [phase5, ui]
+  depends_on: [v2_sse]
+  workflow: full
+  budget:
+    max_iterations: 12
+    max_cost: 50.0
+  variables:
+    description: >
+      Create src/v2/web/dashboard.html — single-file web UI.
+      Vanilla HTML/CSS/JS, dark theme, embedded via Bun import.
+
+      Views:
+
+      1. Action list (default)
+         - Status filter checkboxes (pending/running/completed/failed/waiting)
+         - Tag filter text input
+         - Action cards: ID, type badge, status badge, tags, cost, iteration
+         - Click to expand: output (with notes), edges, history timeline
+
+      2. Import
+         - YAML textarea (monospace)
+         - Submit → POST /import → show created action IDs
+         - Template dropdown (minimal, standard configs)
+
+      3. Action detail (expanded card)
+         - Full params display
+         - Output with summary and notes
+         - Edge list: incoming + outgoing with conditions
+         - History entries (timestamped)
+         - Buttons: Retry, Skip
+         - For waiting actions: respond form (status dropdown + notes textarea)
+
+      4. Stats header
+         - Total / pending / running / completed / failed / waiting counts
+         - Total cost across all actions
+         - Per-tag cost breakdown (collapsible)
+
+      Live updates via SSE /events:
+        - Action status changes update cards in place
+        - New actions appear
+        - History entries append
+
+      Executor control: pause/resume toggle in header.
+      Connection indicator in footer (debounced reconnect).
+
+      Dark theme matching existing orca:
+        --bg: #0d1117, --surface: #161b22, --border: #30363d
+        --text: #e6edf3, --dim: #8b949e
+        --green: #3fb950, --red: #f85149, --yellow: #d29922, --cyan: #58a6ff
+        Monospace font stack.
+
+      Single HTML file, inline CSS and JS. No frameworks.
+    develop_focus:
+      - "Action list with status/tag filters"
+      - "Expandable action detail with output, edges, history"
+      - "Import view with YAML textarea"
+      - "SSE live updates"
+      - "Respond form for waiting actions"
+      - "Stats header with counts and costs"
+      - "Executor pause/resume"
+      - "Dark theme"
+
+# ===========================
+# PHASE 6: Integration Test
+# ===========================
+
+- id: v2_e2e
+  title: "End-to-end integration validation"
+  tags: [phase6, e2e]
+  depends_on: [v2_cli, v2_dashboard, v2_supervisor, v2_human_action]
+  workflow: full
+  budget:
+    max_iterations: 10
+    max_cost: 40.0
+  variables:
+    description: >
+      Write src/v2/e2e.test.ts — end-to-end tests that verify the complete
+      v2 system works.
+
+      Test scenarios:
+
+      1. Full lifecycle via CLI:
+         - Create a v2 config YAML with 2 tasks (both using command actions
+           so no Claude API calls needed)
+         - Task 1: actions [cmd-a, cmd-b], both echo and exit 0
+         - Task 2: actions [cmd-c], depends_on [task1]
+         - Run via: create DB, expandConfig, create Executor, run()
+         - Verify: all 3 actions completed, edges traversed, task 2 ran
+           after task 1
+
+      2. Retry loop:
+         - Config with actions [develop-cmd, eval-cmd]
+         - eval-cmd fails first 2 times (script with counter file), passes 3rd
+         - develop-cmd [pass] → eval-cmd, eval-cmd [fail] → develop-cmd
+         - Verify: 3 iterations, then completed
+
+      3. Server API:
+         - Start server programmatically
+         - POST /import with config
+         - GET /actions → verify created
+         - POST /executor/pause → verify paused
+         - POST /executor/resume → verify resumed
+         - Wait for completion
+         - GET /actions → all completed
+
+      4. Human action:
+         - Config with actions [cmd-a, notify]
+         - notify has wait_for_response: true, command: "echo notified"
+         - Start executor, verify notify enters waiting
+         - POST /actions/task.notify/respond with {status: "passed"}
+         - Verify action completed
+
+      5. SSE events:
+         - Connect to /events
+         - Import config and run
+         - Verify action_started and action_completed events received
+
+      6. Tag operations:
+         - Import config, verify auto-tags
+         - GET /actions?tag=type:cmd-a → correct results
+         - PATCH /actions?tag=task:task1 → bulk update works
+
+      These tests use command actions (echo, simple scripts) — no Claude
+      API calls. They verify the plumbing works end-to-end.
+    develop_focus:
+      - "Full lifecycle: config → expand → execute → complete"
+      - "Retry loop with failure/success cycle"
+      - "Server API: import, CRUD, executor control"
+      - "Human action: wait → respond → complete"
+      - "SSE event verification"
+      - "Tag-based operations"
+      - "All tests use command actions, no API calls"
