@@ -499,14 +499,12 @@ function handleHealth(
   });
 }
 
-// GET /
+// GET / — serve dashboard
+const DASHBOARD_HTML = await Bun.file(new URL("./web/dashboard.html", import.meta.url).pathname).text();
+
 function handleRoot(): Response {
-  const html = `<!DOCTYPE html>
-<html><head><title>Orca v2</title></head>
-<body><h1>Orca v2 Server</h1><p>API server running.</p></body>
-</html>`;
-  return new Response(html, {
-    headers: { "Content-Type": "text/html", ...CORS_HEADERS },
+  return new Response(DASHBOARD_HTML, {
+    headers: { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS },
   });
 }
 

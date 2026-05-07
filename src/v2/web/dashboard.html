@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orca v2 Dashboard</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --cyan: #58a6ff;
+  --font: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button {
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 12px;
+  background: var(--surface);
+  color: var(--text);
+  transition: background 0.15s;
+}
+button:hover { background: var(--border); }
+button.primary { background: var(--cyan); color: var(--bg); border-color: var(--cyan); }
+button.primary:hover { opacity: 0.85; }
+button.danger { background: var(--red); color: #fff; border-color: var(--red); }
+button.danger:hover { opacity: 0.85; }
+input, textarea, select {
+  font-family: var(--font);
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  outline: none;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--cyan); }
+label { color: var(--dim); font-size: 12px; }
+
+/* Layout */
+.header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.header h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+.header-stats {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.stat .count { color: var(--text); font-weight: 600; }
+.stat.total .count { color: var(--cyan); }
+.stat.pending .count { color: var(--yellow); }
+.stat.running .count { color: var(--cyan); }
+.stat.completed .count { color: var(--green); }
+.stat.failed .count { color: var(--red); }
+.stat.waiting .count { color: var(--yellow); }
+.header-right {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.cost-total { font-size: 12px; color: var(--dim); }
+.cost-total span { color: var(--green); font-weight: 600; }
+
+/* Nav */
+.nav {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0 20px;
+}
+.nav-tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--dim);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  border-radius: 0;
+  cursor: pointer;
+}
+.nav-tab:hover { color: var(--text); background: none; }
+.nav-tab.active { color: var(--text); border-bottom-color: var(--cyan); }
+
+/* Main */
+.main { flex: 1; padding: 16px 20px; overflow-y: auto; }
+
+/* Filters */
+.filters {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.filter-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.filter-group label { margin-right: 4px; }
+.filter-cb {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.filter-cb input[type="checkbox"] { accent-color: var(--cyan); }
+.filter-cb:hover { color: var(--text); }
+.tag-input { width: 140px; }
+
+/* Action cards */
+.action-list { display: flex; flex-direction: column; gap: 8px; }
+.action-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.action-card:hover { border-color: var(--cyan); }
+.action-card.expanded { border-color: var(--cyan); }
+.action-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.action-id { font-weight: 600; font-size: 14px; }
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge-type { background: #1f2937; color: var(--cyan); border: 1px solid var(--border); }
+.badge-status { border: 1px solid; }
+.badge-pending { color: var(--yellow); border-color: var(--yellow); background: rgba(210,153,34,0.1); }
+.badge-running { color: var(--cyan); border-color: var(--cyan); background: rgba(88,166,255,0.1); }
+.badge-completed { color: var(--green); border-color: var(--green); background: rgba(63,185,80,0.1); }
+.badge-failed { color: var(--red); border-color: var(--red); background: rgba(248,81,73,0.1); }
+.badge-waiting { color: var(--yellow); border-color: var(--yellow); background: rgba(210,153,34,0.1); }
+.badge-skipped { color: var(--dim); border-color: var(--dim); background: rgba(139,148,158,0.1); }
+.badge-inactive { color: var(--dim); border-color: var(--dim); background: rgba(139,148,158,0.1); }
+.action-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(88,166,255,0.1);
+  color: var(--cyan);
+  border: 1px solid rgba(88,166,255,0.2);
+}
+.action-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--dim);
+  margin-left: auto;
+}
+
+/* Expanded detail */
+.action-detail {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: none;
+}
+.action-card.expanded .action-detail { display: block; }
+.detail-section { margin-bottom: 12px; }
+.detail-section h4 {
+  font-size: 12px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.detail-section pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.edge-list { list-style: none; }
+.edge-list li {
+  padding: 4px 0;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.edge-arrow { color: var(--dim); }
+.edge-condition {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(139,148,158,0.1);
+  color: var(--dim);
+  border: 1px solid var(--border);
+}
+.history-timeline { list-style: none; }
+.history-entry {
+  padding: 4px 0;
+  font-size: 12px;
+  display: flex;
+  gap: 8px;
+}
+.history-time { color: var(--dim); white-space: nowrap; min-width: 80px; }
+.history-event { color: var(--cyan); font-weight: 600; }
+.action-buttons { display: flex; gap: 8px; margin-top: 8px; }
+
+/* Respond form */
+.respond-form {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.respond-form .form-row { margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
+.respond-form textarea { min-height: 60px; resize: vertical; }
+
+/* Import view */
+.import-view { max-width: 700px; }
+.import-view textarea {
+  width: 100%;
+  min-height: 300px;
+  resize: vertical;
+  margin-bottom: 12px;
+}
+.import-view .template-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.import-result {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.import-result.success { background: rgba(63,185,80,0.1); border: 1px solid var(--green); color: var(--green); }
+.import-result.error { background: rgba(248,81,73,0.1); border: 1px solid var(--red); color: var(--red); }
+
+/* Per-tag costs */
+.cost-breakdown {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.cost-breakdown summary {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 12px;
+}
+.cost-breakdown summary:hover { color: var(--text); }
+.cost-breakdown-list { list-style: none; padding-left: 8px; margin-top: 4px; }
+.cost-breakdown-list li { padding: 2px 0; color: var(--dim); }
+.cost-breakdown-list .tag-name { color: var(--cyan); }
+.cost-breakdown-list .tag-cost { color: var(--green); }
+
+/* Footer */
+.footer {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 6px 20px;
+  font-size: 11px;
+  color: var(--dim);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.connection-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+.connection-dot.connected { background: var(--green); }
+.connection-dot.disconnected { background: var(--red); }
+.connection-dot.connecting { background: var(--yellow); }
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  color: var(--dim);
+}
+</style>
+</head>
+<body>
+
+<!-- Header / Stats -->
+<div class="header">
+  <h1>Orca v2</h1>
+  <div class="header-stats" id="stats">
+    <div class="stat total"><span class="count" id="stat-total">0</span> total</div>
+    <div class="stat pending"><span class="count" id="stat-pending">0</span> pending</div>
+    <div class="stat running"><span class="count" id="stat-running">0</span> running</div>
+    <div class="stat completed"><span class="count" id="stat-completed">0</span> completed</div>
+    <div class="stat failed"><span class="count" id="stat-failed">0</span> failed</div>
+    <div class="stat waiting"><span class="count" id="stat-waiting">0</span> waiting</div>
+  </div>
+  <div class="header-right">
+    <div class="cost-total">Cost: <span id="cost-total">$0.00</span></div>
+    <div class="cost-breakdown">
+      <details id="cost-breakdown-details">
+        <summary>per-tag</summary>
+        <ul class="cost-breakdown-list" id="cost-breakdown-list"></ul>
+      </details>
+    </div>
+    <button id="executor-toggle" onclick="toggleExecutor()">Pause</button>
+  </div>
+</div>
+
+<!-- Nav -->
+<div class="nav">
+  <button class="nav-tab active" data-view="actions" onclick="switchView('actions')">Actions</button>
+  <button class="nav-tab" data-view="import" onclick="switchView('import')">Import</button>
+</div>
+
+<!-- Main -->
+<div class="main" id="main">
+  <!-- Actions view -->
+  <div id="view-actions">
+    <div class="filters">
+      <div class="filter-group">
+        <label>Status:</label>
+        <label class="filter-cb"><input type="checkbox" checked data-status="pending" onchange="applyFilters()"> pending</label>
+        <label class="filter-cb"><input type="checkbox" checked data-status="running" onchange="applyFilters()"> running</label>
+        <label class="filter-cb"><input type="checkbox" checked data-status="completed" onchange="applyFilters()"> completed</label>
+        <label class="filter-cb"><input type="checkbox" checked data-status="failed" onchange="applyFilters()"> failed</label>
+        <label class="filter-cb"><input type="checkbox" checked data-status="waiting" onchange="applyFilters()"> waiting</label>
+      </div>
+      <div class="filter-group">
+        <label>Tag:</label>
+        <input type="text" class="tag-input" id="tag-filter" placeholder="filter by tag" oninput="applyFilters()">
+      </div>
+    </div>
+    <div class="action-list" id="action-list"></div>
+  </div>
+
+  <!-- Import view -->
+  <div id="view-import" style="display:none" class="import-view">
+    <div class="template-row">
+      <label>Template:</label>
+      <select id="import-template" onchange="loadTemplate()">
+        <option value="">-- select --</option>
+        <option value="minimal">Minimal</option>
+        <option value="standard">Standard</option>
+      </select>
+    </div>
+    <textarea id="import-yaml" placeholder="Paste YAML config here..."></textarea>
+    <button class="primary" onclick="submitImport()">Import</button>
+    <div id="import-result"></div>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <div id="connection-status">
+    <span class="connection-dot connecting" id="connection-dot"></span>
+    <span id="connection-text">Connecting...</span>
+  </div>
+  <div>Orca v2</div>
+</div>
+
+<script>
+(function() {
+  // ── State ──
+  let actions = [];
+  let actionDetails = {}; // id -> { edges, history }
+  let expandedId = null;
+  let executorState = 'idle';
+  let evtSource = null;
+  let reconnectTimer = null;
+  let reconnectDelay = 1000;
+
+  const API = location.origin;
+
+  // ── Templates ──
+  const TEMPLATES = {
+    minimal: `name: my-project
+defaults:
+  types:
+    develop:
+      type: agent
+      params:
+        prompt_template: "Implement the feature"
+tasks:
+  - id: task1
+    prompt: "Build feature"
+    actions: [develop]
+`,
+    standard: `name: my-project
+defaults:
+  types:
+    develop:
+      type: agent
+      params:
+        prompt_template: "Implement the feature"
+    eval:
+      type: command
+      params:
+        command: "bun test"
+tasks:
+  - id: task1
+    prompt: "Build feature X"
+    actions: [develop, eval]
+    tags: [frontend]
+  - id: task2
+    prompt: "Build feature Y"
+    actions: [develop, eval]
+    tags: [backend]
+    depends_on: [task1]
+`
+  };
+
+  // ── API helpers ──
+  async function api(path, opts) {
+    const res = await fetch(API + path, opts);
+    return res.json();
+  }
+  async function apiPost(path, body) {
+    return api(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  }
+  async function apiPatch(path, body) {
+    return api(path, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  }
+
+  // ── Data loading ──
+  async function loadActions() {
+    try {
+      actions = await api('/actions');
+      renderActions();
+      updateStats();
+    } catch(e) { console.error('Failed to load actions:', e); }
+  }
+
+  async function loadActionDetail(id) {
+    try {
+      const data = await api('/actions/' + encodeURIComponent(id));
+      actionDetails[id] = { edges: data.edges, history: data.history };
+      // Update the action data too
+      const idx = actions.findIndex(a => a.id === id);
+      if (idx >= 0) actions[idx] = data.action;
+      renderActions();
+    } catch(e) { console.error('Failed to load action detail:', e); }
+  }
+
+  async function loadExecutorStatus() {
+    try {
+      const data = await api('/executor/status');
+      executorState = data.state;
+      updateExecutorButton();
+    } catch(e) {}
+  }
+
+  // ── Stats ──
+  function updateStats() {
+    const counts = { total: 0, pending: 0, running: 0, completed: 0, failed: 0, waiting: 0 };
+    let totalCost = 0;
+    const tagCosts = {};
+
+    for (const a of actions) {
+      counts.total++;
+      if (counts[a.status] !== undefined) counts[a.status]++;
+      totalCost += a.cost_usd || 0;
+      if (a.tags) {
+        for (const t of a.tags) {
+          tagCosts[t] = (tagCosts[t] || 0) + (a.cost_usd || 0);
+        }
+      }
+    }
+
+    document.getElementById('stat-total').textContent = counts.total;
+    document.getElementById('stat-pending').textContent = counts.pending;
+    document.getElementById('stat-running').textContent = counts.running;
+    document.getElementById('stat-completed').textContent = counts.completed;
+    document.getElementById('stat-failed').textContent = counts.failed;
+    document.getElementById('stat-waiting').textContent = counts.waiting;
+    document.getElementById('cost-total').textContent = '$' + totalCost.toFixed(2);
+
+    // Per-tag costs
+    const list = document.getElementById('cost-breakdown-list');
+    list.innerHTML = '';
+    for (const [tag, cost] of Object.entries(tagCosts).sort((a,b) => b[1] - a[1])) {
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="tag-name">' + esc(tag) + '</span>: <span class="tag-cost">$' + cost.toFixed(4) + '</span>';
+      list.appendChild(li);
+    }
+  }
+
+  // ── Filters ──
+  function getActiveStatuses() {
+    const cbs = document.querySelectorAll('.filter-cb input[type="checkbox"]');
+    const active = [];
+    cbs.forEach(cb => { if (cb.checked) active.push(cb.dataset.status); });
+    return active;
+  }
+
+  function getTagFilter() {
+    return (document.getElementById('tag-filter').value || '').trim().toLowerCase();
+  }
+
+  function filterActions() {
+    const statuses = getActiveStatuses();
+    const tag = getTagFilter();
+    return actions.filter(a => {
+      if (!statuses.includes(a.status)) return false;
+      if (tag && !(a.tags || []).some(t => t.toLowerCase().includes(tag))) return false;
+      return true;
+    });
+  }
+
+  window.applyFilters = function() { renderActions(); };
+
+  // ── Rendering ──
+  function esc(s) {
+    if (s == null) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+
+  function renderActions() {
+    const container = document.getElementById('action-list');
+    const filtered = filterActions();
+
+    if (filtered.length === 0) {
+      container.innerHTML = '<div class="empty-state">No actions found</div>';
+      return;
+    }
+
+    container.innerHTML = filtered.map(a => {
+      const isExpanded = expandedId === a.id;
+      const detail = actionDetails[a.id];
+      return `
+        <div class="action-card ${isExpanded ? 'expanded' : ''}" data-id="${esc(a.id)}" onclick="toggleAction('${esc(a.id)}')">
+          <div class="action-header">
+            <span class="action-id">${esc(a.id)}</span>
+            <span class="badge badge-type">${esc(a.type)}</span>
+            <span class="badge badge-status badge-${esc(a.status)}">${esc(a.status)}</span>
+            <div class="action-tags">${(a.tags||[]).map(t => '<span class="tag">' + esc(t) + '</span>').join('')}</div>
+            <div class="action-meta">
+              <span>$${(a.cost_usd||0).toFixed(4)}</span>
+              <span>iter ${a.iteration || 0}</span>
+            </div>
+          </div>
+          <div class="action-detail">
+            ${isExpanded ? renderDetail(a, detail) : ''}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  function renderDetail(a, detail) {
+    let html = '';
+
+    // Params
+    html += '<div class="detail-section"><h4>Params</h4><pre>' + esc(JSON.stringify(a.params, null, 2)) + '</pre></div>';
+
+    // Output
+    if (a.output) {
+      html += '<div class="detail-section"><h4>Output</h4><pre>' + esc(JSON.stringify(a.output, null, 2)) + '</pre></div>';
+    }
+
+    // Edges
+    if (detail) {
+      if (detail.edges) {
+        const incoming = detail.edges.to || [];
+        const outgoing = detail.edges.from || [];
+        if (incoming.length || outgoing.length) {
+          html += '<div class="detail-section"><h4>Edges</h4><ul class="edge-list">';
+          for (const e of incoming) {
+            html += '<li><span class="edge-condition">' + esc(e.condition) + '</span> <span class="edge-arrow">&larr;</span> ' + esc(e.from_action) + '</li>';
+          }
+          for (const e of outgoing) {
+            html += '<li>' + esc(e.to_action) + ' <span class="edge-arrow">&rarr;</span> <span class="edge-condition">' + esc(e.condition) + '</span></li>';
+          }
+          html += '</ul></div>';
+        }
+      }
+
+      // History
+      if (detail.history && detail.history.length) {
+        html += '<div class="detail-section"><h4>History</h4><ul class="history-timeline">';
+        for (const h of detail.history) {
+          const time = h.timestamp ? new Date(h.timestamp).toLocaleTimeString() : '';
+          html += '<li class="history-entry"><span class="history-time">' + esc(time) + '</span><span class="history-event">' + esc(h.event_type) + '</span><span>' + esc(typeof h.data === 'string' ? h.data : JSON.stringify(h.data)) + '</span></li>';
+        }
+        html += '</ul></div>';
+      }
+    }
+
+    // Action buttons
+    html += '<div class="action-buttons">';
+    html += '<button onclick="event.stopPropagation(); retryAction(\'' + esc(a.id) + '\')">Retry</button>';
+    html += '<button onclick="event.stopPropagation(); skipAction(\'' + esc(a.id) + '\')">Skip</button>';
+    html += '</div>';
+
+    // Respond form for waiting actions
+    if (a.status === 'waiting') {
+      html += renderRespondForm(a.id);
+    }
+
+    return html;
+  }
+
+  function renderRespondForm(id) {
+    return `
+      <div class="respond-form" onclick="event.stopPropagation()">
+        <h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Respond</h4>
+        <div class="form-row">
+          <label>Status</label>
+          <select id="respond-status-${esc(id)}">
+            <option value="completed">completed</option>
+            <option value="failed">failed</option>
+            <option value="pass">pass</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Notes</label>
+          <textarea id="respond-notes-${esc(id)}" placeholder="Optional notes..."></textarea>
+        </div>
+        <button class="primary" onclick="event.stopPropagation(); respondAction('${esc(id)}')">Submit Response</button>
+      </div>`;
+  }
+
+  // ── Action handlers ──
+  window.toggleAction = function(id) {
+    if (expandedId === id) {
+      expandedId = null;
+      renderActions();
+    } else {
+      expandedId = id;
+      if (!actionDetails[id]) {
+        loadActionDetail(id);
+      } else {
+        renderActions();
+      }
+    }
+  };
+
+  window.retryAction = async function(id) {
+    await apiPost('/actions/' + encodeURIComponent(id) + '/retry', {});
+    await loadActions();
+    if (expandedId === id) await loadActionDetail(id);
+  };
+
+  window.skipAction = async function(id) {
+    await apiPost('/actions/' + encodeURIComponent(id) + '/skip', {});
+    await loadActions();
+    if (expandedId === id) await loadActionDetail(id);
+  };
+
+  window.respondAction = async function(id) {
+    const status = document.getElementById('respond-status-' + id).value;
+    const notes = document.getElementById('respond-notes-' + id).value;
+    await apiPost('/actions/' + encodeURIComponent(id) + '/respond', {
+      status: status,
+      summary: status,
+      notes: notes || undefined
+    });
+    await loadActions();
+    if (expandedId === id) await loadActionDetail(id);
+  };
+
+  // ── Executor ──
+  window.toggleExecutor = async function() {
+    if (executorState === 'paused') {
+      await apiPost('/executor/resume', {});
+      executorState = 'running';
+    } else {
+      await apiPost('/executor/pause', {});
+      executorState = 'paused';
+    }
+    updateExecutorButton();
+  };
+
+  function updateExecutorButton() {
+    const btn = document.getElementById('executor-toggle');
+    if (executorState === 'paused') {
+      btn.textContent = 'Resume';
+      btn.classList.add('primary');
+    } else {
+      btn.textContent = 'Pause';
+      btn.classList.remove('primary');
+    }
+  }
+
+  // ── Views ──
+  window.switchView = function(view) {
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('.nav-tab[data-view="' + view + '"]').classList.add('active');
+    document.getElementById('view-actions').style.display = view === 'actions' ? '' : 'none';
+    document.getElementById('view-import').style.display = view === 'import' ? '' : 'none';
+  };
+
+  window.loadTemplate = function() {
+    const sel = document.getElementById('import-template');
+    const tpl = TEMPLATES[sel.value];
+    if (tpl) document.getElementById('import-yaml').value = tpl;
+  };
+
+  window.submitImport = async function() {
+    const yaml = document.getElementById('import-yaml').value.trim();
+    if (!yaml) return;
+    const resultDiv = document.getElementById('import-result');
+    try {
+      const data = await apiPost('/import', { yaml: yaml });
+      if (data.error) {
+        resultDiv.className = 'import-result error';
+        resultDiv.textContent = 'Error: ' + data.error;
+      } else {
+        resultDiv.className = 'import-result success';
+        resultDiv.textContent = 'Created ' + data.actions.length + ' actions: ' + data.actions.join(', ');
+        await loadActions();
+      }
+    } catch(e) {
+      resultDiv.className = 'import-result error';
+      resultDiv.textContent = 'Error: ' + e.message;
+    }
+  };
+
+  // ── SSE ──
+  function connectSSE() {
+    if (evtSource) { evtSource.close(); evtSource = null; }
+    setConnectionStatus('connecting');
+
+    evtSource = new EventSource(API + '/events');
+
+    evtSource.addEventListener('connected', function() {
+      setConnectionStatus('connected');
+      reconnectDelay = 1000;
+    });
+
+    evtSource.addEventListener('action_started', function(e) {
+      const data = JSON.parse(e.data);
+      updateActionInPlace(data.action_id, { status: 'running' });
+    });
+
+    evtSource.addEventListener('action_completed', function(e) {
+      const data = JSON.parse(e.data);
+      updateActionInPlace(data.action_id, { status: 'completed', cost_usd: data.cost_usd });
+    });
+
+    evtSource.addEventListener('action_waiting', function(e) {
+      const data = JSON.parse(e.data);
+      updateActionInPlace(data.action_id, { status: 'waiting' });
+    });
+
+    evtSource.addEventListener('executor_state', function(e) {
+      const data = JSON.parse(e.data);
+      executorState = data.state;
+      updateExecutorButton();
+      // Reload all actions on state changes to catch new actions
+      loadActions();
+    });
+
+    evtSource.addEventListener('edge_traversed', function(e) {
+      // Reload to pick up status changes from edge traversals
+      loadActions();
+    });
+
+    evtSource.onerror = function() {
+      setConnectionStatus('disconnected');
+      evtSource.close();
+      evtSource = null;
+      // Debounced reconnect
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(function() {
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+        connectSSE();
+      }, reconnectDelay);
+    };
+  }
+
+  function updateActionInPlace(id, updates) {
+    const idx = actions.findIndex(a => a.id === id);
+    if (idx >= 0) {
+      Object.assign(actions[idx], updates);
+      renderActions();
+      updateStats();
+    } else {
+      // New action — reload all
+      loadActions();
+    }
+  }
+
+  function setConnectionStatus(status) {
+    const dot = document.getElementById('connection-dot');
+    const text = document.getElementById('connection-text');
+    dot.className = 'connection-dot ' + status;
+    const labels = { connected: 'Connected', disconnected: 'Disconnected', connecting: 'Connecting...' };
+    text.textContent = labels[status] || status;
+  }
+
+  // ── Init ──
+  loadActions();
+  loadExecutorStatus();
+  connectSSE();
+})();
+</script>
+</body>
+</html>
