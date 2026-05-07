@@ -31,6 +31,7 @@ export interface ExecutorOptions {
   runActionFn?: RunActionFn;
   onActionStart?: (action: ActionConfig) => void;
   onActionEnd?: (action: ActionConfig, result: ActionResult) => void;
+  onActionWaiting?: (action: ActionConfig) => void;
   onEdgeTraversed?: (from: string, to: string, condition: string) => void;
   onIdle?: () => void;
 }
@@ -148,6 +149,7 @@ export class Executor {
           status: "waiting",
           output: result.output,
         });
+        this.options.onActionWaiting?.(this.db.getAction(action.id)!);
         continue;
       }
 

@@ -26,12 +26,26 @@ export interface ServerOptions {
   noExecutor?: boolean;
 }
 
+// SSE event types
+export type SSEEventType =
+  | "action_started"
+  | "action_completed"
+  | "action_waiting"
+  | "edge_traversed"
+  | "executor_state";
+
+export interface SSEClient {
+  controller: ReadableStreamDefaultController;
+  actionFilter?: string; // if set, only events for this action
+}
+
 interface ServerState {
   db: OrcaDatabase;
   executor: Executor | null;
   executorState: "running" | "paused" | "idle";
   typeDefaults: Record<string, ActionTypeDefaults>;
   startTime: number;
+  sseClients: Set<SSEClient>;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +75,53 @@ async function parseBody(req: Request): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// SSE helpers
+// ---------------------------------------------------------------------------
+
+function sseEvent(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+export function broadcast(state: ServerState, event: SSEEventType, data: Record<string, unknown>, actionId?: string): void {
+  const encoded = new TextEncoder().encode(sseEvent(event, data));
+  const toRemove: SSEClient[] = [];
+
+  for (const client of state.sseClients) {
+    // Per-action filtering: skip if client has a filter and this event doesn't match
+    if (client.actionFilter && actionId && client.actionFilter !== actionId) continue;
+
+    try {
+      client.controller.enqueue(encoded);
+    } catch {
+      toRemove.push(client);
+    }
+  }
+
+  for (const client of toRemove) {
+    state.sseClients.delete(client);
+  }
+}
+
+function startHeartbeat(state: ServerState): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    const comment = new TextEncoder().encode(": heartbeat\n\n");
+    const toRemove: SSEClient[] = [];
+
+    for (const client of state.sseClients) {
+      try {
+        client.controller.enqueue(comment);
+      } catch {
+        toRemove.push(client);
+      }
+    }
+
+    for (const client of toRemove) {
+      state.sseClients.delete(client);
+    }
+  }, 30_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -431,14 +492,74 @@ function handleRoot(): Response {
   });
 }
 
+// GET /events — global SSE stream
+function handleSSE(
+  _req: Request,
+  state: ServerState,
+): Response {
+  const stream = new ReadableStream({
+    start(controller) {
+      const client: SSEClient = { controller };
+      state.sseClients.add(client);
+      // Send initial connection event
+      controller.enqueue(new TextEncoder().encode(sseEvent("connected", { timestamp: new Date().toISOString() })));
+    },
+    cancel() {
+      // Client disconnected — cleanup happens on next broadcast write failure
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+// GET /actions/:id/events — per-action SSE stream
+function handleActionSSE(
+  _req: Request,
+  state: ServerState,
+  params: Record<string, string>,
+): Response {
+  const actionId = params.id;
+  const action = state.db.getAction(actionId);
+  if (!action) return jsonError("Action not found", 404);
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const client: SSEClient = { controller, actionFilter: actionId };
+      state.sseClients.add(client);
+      controller.enqueue(new TextEncoder().encode(sseEvent("connected", { action_id: actionId, timestamp: new Date().toISOString() })));
+    },
+    cancel() {
+      // cleanup on next write failure
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      ...CORS_HEADERS,
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Route table
 // ---------------------------------------------------------------------------
 
 const routes: Route[] = [
   defineRoute("POST", "/import", handleImport),
+  defineRoute("GET", "/events", handleSSE),
   defineRoute("GET", "/actions", handleListActions),
   defineRoute("PATCH", "/actions", handleBulkUpdate),
+  defineRoute("GET", "/actions/:id/events", handleActionSSE),
   defineRoute("GET", "/actions/:id", handleGetAction),
   defineRoute("PATCH", "/actions/:id", handleUpdateAction),
   defineRoute("DELETE", "/actions/:id", handleDeleteAction),
@@ -463,8 +584,19 @@ export function startServer(options: ServerOptions = {}) {
   const port = options.port ?? 7072;
   const db = options.db ?? new OrcaDatabase(options.dbPath ?? ":memory:");
 
+  const sseClients = new Set<SSEClient>();
+
   let executor: Executor | null = options.executor ?? null;
   let executorState: "running" | "paused" | "idle" = "idle";
+
+  const state: ServerState = {
+    db,
+    executor,
+    executorState,
+    typeDefaults: {},
+    startTime: Date.now(),
+    sseClients,
+  };
 
   if (!options.noExecutor && !executor) {
     executor = new Executor(db, {
@@ -476,7 +608,29 @@ export function startServer(options: ServerOptions = {}) {
         duration_ms: 0,
         num_turns: 0,
       }),
+      onActionStart: (action) => {
+        broadcast(state, "action_started", { action_id: action.id, type: action.type }, action.id);
+      },
+      onActionEnd: (action, result) => {
+        broadcast(state, "action_completed", {
+          action_id: action.id,
+          condition: result.condition,
+          cost_usd: result.cost_usd,
+        }, action.id);
+      },
+      onActionWaiting: (action) => {
+        broadcast(state, "action_waiting", { action_id: action.id }, action.id);
+      },
+      onEdgeTraversed: (from, to, condition) => {
+        broadcast(state, "edge_traversed", { from, to, condition });
+      },
+      onIdle: () => {
+        const actions = db.listActions();
+        const pending = actions.filter((a) => a.status === "pending").length;
+        broadcast(state, "executor_state", { state: "idle", pending_count: pending });
+      },
     });
+    state.executor = executor;
     // Start executor loop in background
     executorState = "running";
     executor.run().then(() => {
@@ -484,20 +638,14 @@ export function startServer(options: ServerOptions = {}) {
     });
   }
 
-  const state: ServerState = {
-    db,
-    executor,
-    executorState,
-    typeDefaults: {},
-    startTime: Date.now(),
-  };
-
   // Make executorState a proxy via getter/setter
   Object.defineProperty(state, "executorState", {
     get: () => executorState,
     set: (v: string) => { executorState = v as "running" | "paused" | "idle"; },
     enumerable: true,
   });
+
+  const heartbeatInterval = startHeartbeat(state);
 
   const server = Bun.serve({
     port,
@@ -538,7 +686,7 @@ export function startServer(options: ServerOptions = {}) {
     },
   });
 
-  return { server, db, state };
+  return { server, db, state, heartbeatInterval };
 }
 
 // ---------------------------------------------------------------------------
