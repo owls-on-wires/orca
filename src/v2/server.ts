@@ -6,6 +6,7 @@
 import { OrcaDatabase } from "./db";
 import { expandConfig } from "./config";
 import { Executor, type ExecutorOptions } from "./executor";
+import { runAction } from "./action-runner";
 import type {
   ActionConfig,
   ActionStatus,
@@ -618,13 +619,7 @@ export function startServer(options: ServerOptions = {}) {
   if (!options.noExecutor && !executor) {
     executor = new Executor(db, {
       projectDir: ".",
-      runActionFn: async () => ({
-        condition: "pass" as EdgeCondition,
-        output: { status: "pass", summary: "noop" },
-        cost_usd: 0,
-        duration_ms: 0,
-        num_turns: 0,
-      }),
+      runActionFn: runAction,
       onActionStart: (action) => {
         broadcast(state, "action_started", { action_id: action.id, type: action.type }, action.id);
       },
