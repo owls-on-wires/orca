@@ -1,0 +1,278 @@
+import { describe, expect, test, mock, beforeEach } from "bun:test";
+import {
+  runAction,
+  buildPredecessorPrompt,
+  type ActionResult,
+  type WaitingResult,
+  type PredecessorOutput,
+} from "./action-runner";
+import { createAction, type ActionConfig } from "./schema";
+
+// ---------------------------------------------------------------------------
+// Mock invokeSimple
+// ---------------------------------------------------------------------------
+
+const mockInvokeSimple = mock(() =>
+  Promise.resolve({
+    output: { status: "passed", summary: "All good" },
+    costUsd: 0.05,
+    sessionId: "sess-1",
+    numTurns: 3,
+    durationMs: 1500,
+    isError: false,
+  }),
+);
+
+mock.module("../engine/invoke", () => ({
+  invokeSimple: mockInvokeSimple,
+}));
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function agentAction(overrides: Partial<ActionConfig> = {}): ActionConfig {
+  return createAction({
+    id: "test.develop",
+    type: "agent",
+    params: { prompt: "Build something" },
+    ...overrides,
+  });
+}
+
+function commandAction(overrides: Partial<ActionConfig> = {}): ActionConfig {
+  return createAction({
+    id: "test.cmd",
+    type: "command",
+    params: { command: "echo hello", ...overrides.params },
+    ...overrides,
+  });
+}
+
+const defaultOptions = { projectDir: "/tmp" };
+
+// ---------------------------------------------------------------------------
+// Command action tests
+// ---------------------------------------------------------------------------
+
+describe("command action", () => {
+  test("exit 0 → pass", async () => {
+    const action = commandAction({ params: { command: "true" } });
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("pass");
+    expect(result.output.status).toBe("passed");
+    expect(result.cost_usd).toBe(0);
+    expect(result.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(result.num_turns).toBe(0);
+  });
+
+  test("exit 1 → fail", async () => {
+    const action = commandAction({ params: { command: "false" } });
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("fail");
+    expect(result.output.status).toBe("failed");
+  });
+
+  test("timeout → timeout condition", async () => {
+    const action = commandAction({
+      params: { command: "sleep 10", timeout: 0.1 },
+    });
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("timeout");
+    expect(result.output.status).toBe("timeout");
+  });
+
+  test("wait_for_response → WaitingResult", async () => {
+    const action = commandAction({
+      params: { command: "echo started", wait_for_response: true },
+    });
+    const result = (await runAction(action, [], defaultOptions)) as WaitingResult;
+
+    expect(result.waiting).toBe(true);
+    expect(result.output).toBeDefined();
+    expect(result.output.status).toBe("passed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent action tests
+// ---------------------------------------------------------------------------
+
+describe("agent action", () => {
+  beforeEach(() => {
+    mockInvokeSimple.mockClear();
+  });
+
+  test("success with passed status → pass condition", async () => {
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: { status: "passed", summary: "Tests pass" },
+      costUsd: 0.10,
+      sessionId: "s1",
+      numTurns: 5,
+      durationMs: 3000,
+      isError: false,
+    });
+
+    const action = agentAction();
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("pass");
+    expect(result.output.status).toBe("passed");
+    expect(result.cost_usd).toBe(0.10);
+    expect(result.num_turns).toBe(5);
+    expect(result.duration_ms).toBe(3000);
+  });
+
+  test("success with failed status → fail condition", async () => {
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: { status: "failed", summary: "Tests failing" },
+      costUsd: 0.08,
+      sessionId: "s2",
+      numTurns: 4,
+      durationMs: 2000,
+      isError: false,
+    });
+
+    const action = agentAction();
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("fail");
+    expect(result.output.status).toBe("failed");
+  });
+
+  test("success with missing status → fail condition", async () => {
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: { summary: "Something happened" },
+      costUsd: 0.02,
+      sessionId: "s3",
+      numTurns: 2,
+      durationMs: 1000,
+      isError: false,
+    });
+
+    const action = agentAction();
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("fail");
+  });
+
+  test("error with max turns reached → max_turns condition", async () => {
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: null,
+      costUsd: 0.15,
+      sessionId: "s4",
+      numTurns: 10,
+      durationMs: 5000,
+      isError: true,
+    });
+
+    const action = agentAction({ params: { prompt: "Do stuff", max_turns: 10 } });
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("max_turns");
+    expect(result.cost_usd).toBe(0.15);
+    expect(result.num_turns).toBe(10);
+    expect(result.duration_ms).toBe(5000);
+  });
+
+  test("error without max turns → error condition", async () => {
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: null,
+      costUsd: 0.03,
+      sessionId: "s5",
+      numTurns: 2,
+      durationMs: 800,
+      isError: true,
+    });
+
+    const action = agentAction();
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("error");
+    expect(result.cost_usd).toBe(0.03);
+    expect(result.num_turns).toBe(2);
+    expect(result.duration_ms).toBe(800);
+  });
+
+  test("cost/turns always extracted even on error subtypes", async () => {
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: null,
+      costUsd: 0.50,
+      sessionId: null,
+      numTurns: 25,
+      durationMs: 10000,
+      isError: true,
+    });
+
+    const action = agentAction({ params: { prompt: "Expensive task", max_turns: 25 } });
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.cost_usd).toBe(0.50);
+    expect(result.num_turns).toBe(25);
+    expect(result.duration_ms).toBe(10000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Predecessor output injection
+// ---------------------------------------------------------------------------
+
+describe("predecessor output injection", () => {
+  beforeEach(() => {
+    mockInvokeSimple.mockClear();
+  });
+
+  test("formats predecessor outputs into prompt", () => {
+    const predecessors: PredecessorOutput[] = [
+      {
+        actionId: "auth.eval",
+        output: {
+          status: "failed",
+          summary: "3 tests failing in src/auth.test.ts",
+          notes: "Run `bun test src/auth.test.ts` to see failures",
+        },
+      },
+    ];
+
+    const prompt = buildPredecessorPrompt(predecessors);
+
+    expect(prompt).toContain("## Previous actions");
+    expect(prompt).toContain("### auth.eval (failed)");
+    expect(prompt).toContain("Summary: 3 tests failing in src/auth.test.ts");
+    expect(prompt).toContain("Notes: Run `bun test src/auth.test.ts` to see failures");
+  });
+
+  test("empty predecessors → empty string", () => {
+    expect(buildPredecessorPrompt([])).toBe("");
+  });
+
+  test("predecessor prompt is prepended to agent prompt", async () => {
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: { status: "passed", summary: "Done" },
+      costUsd: 0.01,
+      sessionId: "s6",
+      numTurns: 1,
+      durationMs: 500,
+      isError: false,
+    });
+
+    const predecessors: PredecessorOutput[] = [
+      {
+        actionId: "setup.cmd",
+        output: { status: "passed", summary: "Server started" },
+      },
+    ];
+
+    const action = agentAction();
+    await runAction(action, predecessors, defaultOptions);
+
+    expect(mockInvokeSimple).toHaveBeenCalledTimes(1);
+    const callArgs = mockInvokeSimple.mock.calls[0][0] as { prompt: string };
+    expect(callArgs.prompt).toContain("## Previous actions");
+    expect(callArgs.prompt).toContain("### setup.cmd (passed)");
+    expect(callArgs.prompt).toContain("Build something");
+  });
+});
