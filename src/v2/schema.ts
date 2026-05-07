@@ -12,6 +12,7 @@ export type EdgeCondition =
   | "error";
 
 export type ActionStatus =
+  | "inactive"
   | "pending"
   | "running"
   | "completed"
@@ -46,6 +47,15 @@ export interface EdgeConfig {
   from_action: string;
   to_action: string;
   condition: EdgeCondition;
+}
+
+export interface HistoryEntry {
+  id: number;
+  action_id: string;
+  iteration: number | null;
+  event_type: string;
+  data: unknown;
+  timestamp: string;
 }
 
 export interface ActionTypeDefaults {
