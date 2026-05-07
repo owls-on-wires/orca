@@ -162,9 +162,19 @@ async function runCommandAction(
 
   // Interpolate template variables
   const vars: Record<string, string> = {};
+  // Action-level vars for human/notification commands
+  vars["action_id"] = action.id;
+  const taskTag = action.tags.find((t) => t.startsWith("task:"));
+  vars["task_id"] = taskTag ? taskTag.slice(5) : "";
+  vars["summary"] = "";
+  vars["condition"] = "";
+  // Predecessor vars
   for (const pred of predecessorOutputs) {
     vars[`${pred.actionId}.summary`] = pred.output.summary ?? "";
     vars[`${pred.actionId}.status`] = pred.output.status ?? "";
+    // Use last predecessor's summary/condition as default
+    vars["summary"] = pred.output.summary ?? "";
+    vars["condition"] = pred.output.status ?? "";
   }
   const interpolated = applyVars(command, vars);
 

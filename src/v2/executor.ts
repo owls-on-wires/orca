@@ -201,6 +201,34 @@ export class Executor {
     }
   }
 
+  /**
+   * Complete a waiting action with the given output and follow edges.
+   * Called by the server when POST /actions/:id/respond is received.
+   */
+  completeWaitingAction(actionId: string, output: { status: string; summary: string; [key: string]: unknown }): EdgeCondition {
+    const action = this.db.getAction(actionId);
+    if (!action) throw new Error(`Action not found: ${actionId}`);
+    if (action.status !== "waiting") throw new Error(`Action is not waiting: ${actionId}`);
+
+    // Map response status to edge condition
+    const condition: EdgeCondition = output.status === "passed" || output.status === "approved" ? "pass" : "fail";
+
+    this.db.updateAction(actionId, {
+      status: condition === "pass" ? "completed" : "failed",
+      output,
+      completed_at: new Date().toISOString(),
+    });
+
+    this.db.appendHistory(actionId, "completed", {
+      condition,
+      output,
+    });
+
+    this.followEdges(action, condition);
+
+    return condition;
+  }
+
   // ── Private helpers ──
 
   private pickAction(pending: ActionConfig[]): ActionConfig {

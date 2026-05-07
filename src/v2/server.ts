@@ -327,13 +327,30 @@ async function handleRespond(
     ...(body.notes ? { notes: body.notes as string } : {}),
   };
 
-  state.db.updateAction(params.id, {
-    status: "completed",
-    output,
-    completed_at: new Date().toISOString(),
-  });
+  let condition: string = "pass";
 
-  return json({ status: "completed" });
+  if (state.executor) {
+    // Use executor to complete the action and follow edges
+    condition = state.executor.completeWaitingAction(params.id, output);
+
+    // Restart executor loop if idle
+    if (state.executor.isIdle()) {
+      state.executorState = "running";
+      state.executor.resume();
+      state.executor.run().then(() => {
+        state.executorState = "idle";
+      });
+    }
+  } else {
+    // No executor — just update DB directly
+    state.db.updateAction(params.id, {
+      status: "completed",
+      output,
+      completed_at: new Date().toISOString(),
+    });
+  }
+
+  return json({ status: "completed", condition });
 }
 
 // PATCH /actions (bulk update by tag)
