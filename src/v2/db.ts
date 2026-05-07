@@ -95,6 +95,10 @@ export class OrcaDatabase {
     this.db.exec(SCHEMA);
   }
 
+  get rawDb(): Database {
+    return this.db;
+  }
+
   close(): void {
     this.db.close();
   }

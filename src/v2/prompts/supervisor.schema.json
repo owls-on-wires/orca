@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "diagnosis": { "type": "string" },
+    "edits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["add_action", "remove_action", "update_params", "add_edge", "remove_edge"] },
+          "action_id": { "type": "string" },
+          "params": { "type": "object" },
+          "edge": { "type": "object" }
+        },
+        "required": ["type"]
+      }
+    },
+    "retry_action": { "type": ["string", "null"] }
+  },
+  "required": ["diagnosis", "edits"]
+}

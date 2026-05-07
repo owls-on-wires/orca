@@ -13,6 +13,7 @@ import {
   type RunOptions,
 } from "./action-runner";
 import type { ScopeConfig } from "../config/schema";
+import { handleSupervisorResult } from "./supervisor";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -173,6 +174,18 @@ export class Executor {
         cost_usd: actionResult.cost_usd,
         output_hash: hashOutput(actionResult.output),
       });
+
+      // Supervisor handling: if action is tagged type:supervisor and passed
+      if (condition === "pass" && action.tags.some((t) => t === "type:supervisor")) {
+        const completedAction = this.db.getAction(action.id)!;
+        if (completedAction.output) {
+          try {
+            handleSupervisorResult(this.db, completedAction.output);
+          } catch {
+            // Supervisor errors should not crash the executor
+          }
+        }
+      }
 
       // Stuck detection
       condition = this.checkStuck(action.id, condition);
