@@ -5,16 +5,30 @@ import type {
   EdgeCondition,
   EdgeConfig,
   HistoryEntry,
+  ProjectConfig,
 } from "./schema";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  project_dir TEXT NOT NULL,
+  model TEXT,
+  nix JSON,
+  git JSON,
+  scope JSON,
+  defaults JSON,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS actions (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
   params JSON NOT NULL DEFAULT '{}',
   output JSON,
   tags JSON NOT NULL DEFAULT '[]',
@@ -45,6 +59,7 @@ CREATE TABLE IF NOT EXISTS history (
 
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
 CREATE INDEX IF NOT EXISTS idx_actions_type ON actions(type);
+CREATE INDEX IF NOT EXISTS idx_actions_project ON actions(project_id);
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_action);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_action);
 CREATE INDEX IF NOT EXISTS idx_history_action ON history(action_id);
@@ -55,6 +70,7 @@ function rowToAction(row: Record<string, unknown>): ActionConfig {
     id: row.id as string,
     type: row.type as ActionConfig["type"],
     status: row.status as ActionStatus,
+    project_id: (row.project_id as string) ?? null,
     params: JSON.parse((row.params as string) || "{}"),
     output: row.output ? JSON.parse(row.output as string) : null,
     tags: JSON.parse((row.tags as string) || "[]"),
@@ -64,6 +80,20 @@ function rowToAction(row: Record<string, unknown>): ActionConfig {
     updated_at: row.updated_at as string,
     started_at: (row.started_at as string) ?? null,
     completed_at: (row.completed_at as string) ?? null,
+  };
+}
+
+function rowToProject(row: Record<string, unknown>): ProjectConfig {
+  return {
+    id: row.id as string,
+    project_dir: row.project_dir as string,
+    model: (row.model as string) ?? undefined,
+    nix: row.nix ? JSON.parse(row.nix as string) : undefined,
+    git: row.git ? JSON.parse(row.git as string) : undefined,
+    scope: row.scope ? JSON.parse(row.scope as string) : undefined,
+    defaults: row.defaults ? JSON.parse(row.defaults as string) : undefined,
+    created_at: row.created_at as string,
+    updated_at: row.updated_at as string,
   };
 }
 
@@ -103,16 +133,71 @@ export class OrcaDatabase {
     this.db.close();
   }
 
+  // ── Projects ──
+
+  insertProject(project: ProjectConfig): void {
+    this.db.run(
+      `INSERT INTO projects (id, project_dir, model, nix, git, scope, defaults, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        project.id,
+        project.project_dir,
+        project.model ?? null,
+        project.nix ? JSON.stringify(project.nix) : null,
+        project.git ? JSON.stringify(project.git) : null,
+        project.scope ? JSON.stringify(project.scope) : null,
+        project.defaults ? JSON.stringify(project.defaults) : null,
+        project.created_at,
+        project.updated_at,
+      ],
+    );
+  }
+
+  getProject(id: string): ProjectConfig | null {
+    const row = this.db.query("SELECT * FROM projects WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | null;
+    return row ? rowToProject(row) : null;
+  }
+
+  updateProject(id: string, updates: Partial<ProjectConfig>): void {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    if (updates.project_dir !== undefined) { sets.push("project_dir = ?"); values.push(updates.project_dir); }
+    if (updates.model !== undefined) { sets.push("model = ?"); values.push(updates.model); }
+    if (updates.nix !== undefined) { sets.push("nix = ?"); values.push(JSON.stringify(updates.nix)); }
+    if (updates.git !== undefined) { sets.push("git = ?"); values.push(JSON.stringify(updates.git)); }
+    if (updates.scope !== undefined) { sets.push("scope = ?"); values.push(JSON.stringify(updates.scope)); }
+    if (updates.defaults !== undefined) { sets.push("defaults = ?"); values.push(JSON.stringify(updates.defaults)); }
+
+    if (sets.length === 0) return;
+    sets.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(id);
+    this.db.run(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`, values);
+  }
+
+  deleteProject(id: string): void {
+    this.db.run("DELETE FROM projects WHERE id = ?", [id]);
+  }
+
+  listProjects(): ProjectConfig[] {
+    const rows = this.db.query("SELECT * FROM projects ORDER BY created_at").all() as Record<string, unknown>[];
+    return rows.map(rowToProject);
+  }
+
   // ── Actions ──
 
   insertAction(action: ActionConfig): void {
     this.db.run(
-      `INSERT INTO actions (id, type, status, params, output, tags, cost_usd, iteration, created_at, updated_at, started_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO actions (id, type, status, project_id, params, output, tags, cost_usd, iteration, created_at, updated_at, started_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         action.id,
         action.type,
         action.status,
+        action.project_id,
         JSON.stringify(action.params),
         action.output ? JSON.stringify(action.output) : null,
         JSON.stringify(action.tags),
@@ -140,6 +225,10 @@ export class OrcaDatabase {
     if (updates.type !== undefined) {
       sets.push("type = ?");
       values.push(updates.type);
+    }
+    if (updates.project_id !== undefined) {
+      sets.push("project_id = ?");
+      values.push(updates.project_id);
     }
     if (updates.status !== undefined) {
       sets.push("status = ?");

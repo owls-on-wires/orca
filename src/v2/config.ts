@@ -3,6 +3,7 @@ import { OrcaDatabase } from "./db";
 import {
   createAction,
   createEdge,
+  createProject,
   type ActionConfig,
   type ActionTypeDefaults,
   type EdgeCondition,
@@ -24,6 +25,23 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
   if (!config.name) {
     throw new Error("Invalid config: missing name");
   }
+
+  // Create project record
+  const project = createProject({
+    id: config.name,
+    project_dir: config.project_dir ?? ".",
+    model: config.model,
+    nix: config.nix,
+    git: config.git,
+    scope: config.scope,
+    defaults: config.defaults,
+  });
+
+  // Upsert: delete existing project with same ID, then insert fresh
+  if (db.getProject(config.name)) {
+    db.deleteProject(config.name);
+  }
+  db.insertProject(project);
 
   const typeDefaults = config.defaults?.types ?? {};
 
@@ -87,6 +105,7 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
         id: actionId,
         type: typeDef.type,
         status,
+        project_id: config.name,
         params,
         tags,
       });
@@ -243,6 +262,7 @@ function resolveTarget(
             id: autoActionId,
             type: typeDef.type,
             status: "inactive",
+            project_id: config.name,
             params,
             tags,
           });

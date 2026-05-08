@@ -135,11 +135,16 @@ export class Executor {
       // Step 5: Collect predecessor outputs
       const predecessorOutputs = this.collectPredecessorOutputs(action.id);
 
-      // Step 6: Call runAction
+      // Step 6: Call runAction — resolve project config for projectDir, scope, model
+      const project = runningAction.project_id
+        ? this.db.getProject(runningAction.project_id)
+        : null;
+
       const runOptions: RunOptions = {
-        projectDir: this.options.projectDir,
-        model: this.options.model,
-        scope: this.options.scope,
+        projectDir: project?.project_dir ?? this.options.projectDir,
+        model: project?.model ?? this.options.model,
+        scope: project?.scope as any ?? this.options.scope,
+        nix: project?.nix ?? undefined,
       };
 
       const result = await this.runActionFn(runningAction, predecessorOutputs, runOptions);
@@ -322,6 +327,19 @@ export class Executor {
       if (!target) continue;
 
       if (target.status === "inactive" || target.status === "completed" || target.status === "failed") {
+        // Join semantics for inactive targets: ALL incoming edges must be
+        // satisfied before activation. This handles diamond dependencies
+        // (A→B, A→C, B→D, C→D — D waits for both B and C).
+        //
+        // Retry semantics for completed/failed targets: activate immediately
+        // on any matching edge. This handles retry loops
+        // (eval[fail]→develop — develop re-runs on any single failure).
+        if (target.status === "inactive" && !this.allIncomingEdgesSatisfied(target.id)) {
+          // Not all deps met yet — don't activate, just record the traversal
+          this.options.onEdgeTraversed?.(action.id, edge.to_action, condition);
+          continue;
+        }
+
         const newIteration =
           target.status === "completed" || target.status === "failed"
             ? target.iteration + 1
@@ -374,5 +392,49 @@ export class Executor {
 
       this.options.onEdgeTraversed?.(action.id, edge.to_action, condition);
     }
+  }
+
+  /**
+   * Check whether all incoming edges to an inactive action have been satisfied.
+   *
+   * An incoming edge is "satisfied" when its source action has reached a
+   * terminal state (completed, failed, skipped). This means the source ran
+   * and produced a result — the edge either fired (condition matched) or
+   * didn't (condition didn't match, but the source is done).
+   *
+   * Edges from sources that are inactive or pending are NOT blocking —
+   * they're retry/loop-back edges from downstream actions that haven't
+   * run yet and can't block initial activation.
+   *
+   * Join semantics (diamond): D has incoming from B[pass] and C[pass].
+   * B completes → check D → C is pending (not terminal) → C is blocking → wait.
+   * C completes → check D → B completed, C completed → all satisfied → activate.
+   *
+   * Retry edges (loop): develop has incoming from eval[fail].
+   * eval is inactive (hasn't run yet) → not blocking → develop activates.
+   */
+  private allIncomingEdgesSatisfied(actionId: string): boolean {
+    const incoming = this.db.getEdgesTo(actionId);
+    if (incoming.length === 0) return true;
+
+    const sourceIds = new Set(incoming.map(e => e.from_action));
+    const TERMINAL = new Set(["completed", "failed", "skipped"]);
+    const NON_BLOCKING = new Set(["inactive"]);
+
+    for (const srcId of sourceIds) {
+      const src = this.db.getAction(srcId);
+      if (!src) return false;
+
+      // Inactive sources are non-blocking (retry edges from downstream)
+      if (NON_BLOCKING.has(src.status)) continue;
+
+      // Sources that are pending, running, or waiting are blocking —
+      // they're upstream and haven't finished yet
+      if (!TERMINAL.has(src.status)) return false;
+
+      // Terminal sources are satisfied (they ran and produced a result)
+    }
+
+    return true;
   }
 }
