@@ -11,7 +11,7 @@ import type {
   BudgetConfig, EvalConfig, StageOverride,
 } from "./schema";
 
-import schema from "../../schemas/project.orca.schema.json";
+import schema from "../../../../schemas/project.orca.schema.json";
 
 // Compile the schema once
 const ajv = new Ajv({ allErrors: true });

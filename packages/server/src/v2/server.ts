@@ -499,13 +499,16 @@ function handleHealth(
   });
 }
 
-// GET / — serve dashboard
-const DASHBOARD_HTML = await Bun.file(new URL("./web/dashboard.html", import.meta.url).pathname).text();
-
+// GET / — placeholder (dashboard served by separate web package)
 function handleRoot(): Response {
-  return new Response(DASHBOARD_HTML, {
-    headers: { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS },
-  });
+  return new Response(
+    `<html><body style="background:#0d1117;color:#e6edf3;font-family:monospace;padding:40px">
+      <h1>Orca v2 API</h1>
+      <p>API is running. Dashboard is served separately.</p>
+      <p><a href="/health" style="color:#58a6ff">/health</a></p>
+    </body></html>`,
+    { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS } },
+  );
 }
 
 // GET /events — global SSE stream

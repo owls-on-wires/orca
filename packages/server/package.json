@@ -1,0 +1,30 @@
+{
+  "name": "@orca/server",
+  "version": "2.0.0",
+  "description": "Orca orchestration server — action graph executor with REST API",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": {
+    "orca": "src/cli.ts"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/v2/server.ts",
+    "dev:v1": "bun run src/cli.ts",
+    "build": "bun build src/cli.ts --compile --outfile ../../bin/orca",
+    "build:v2": "bun build src/v2/cli.ts --compile --outfile ../../bin/orca-v2",
+    "test": "bun test",
+    "test:v2": "SKIP_LIVE=1 bun test src/v2/",
+    "test:live": "bun test src/v2/live-agent.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "js-yaml": "^4.1.0",
+    "ajv": "^8.17.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
+    "typescript": "^5.7.0"
+  }
+}
