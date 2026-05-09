@@ -390,13 +390,11 @@ async function handleRespond(
     // Use executor to complete the action and follow edges
     condition = state.executor.completeWaitingAction(params.id, output);
 
-    // Restart executor loop if idle
+    // Signal the executor loop to wake up
     if (state.executor.isIdle()) {
       state.executorState = "running";
       state.executor.resume();
-      state.executor.run().then(() => {
-        state.executorState = "idle";
-      });
+      kickExecutor(state);
     }
   } else {
     // No executor — just update DB directly
@@ -508,10 +506,8 @@ function handleExecutorResume(
   if (state.executor) {
     state.executor.resume();
     state.executorState = "running";
-    // Re-start the executor loop in background
-    state.executor.run().then(() => {
-      state.executorState = "idle";
-    });
+    // Signal the executor loop to wake up — don't call run() here
+    kickExecutor(state);
   }
   return json({ state: state.executorState });
 }
@@ -535,24 +531,32 @@ function handleExecutorStatus(
 }
 
 // GET /health
-function handleHealth(
-  _req: Request,
-  state: ServerState,
-): Response {
+function buildStats(state: ServerState) {
   const actions = state.db.listActions();
   const statusCounts: Record<string, number> = {};
+  let totalCost = 0;
   for (const a of actions) {
     statusCounts[a.status] = (statusCounts[a.status] ?? 0) + 1;
+    totalCost += a.cost_usd;
   }
 
-  return json({
+  return {
     version: "2.0.0",
     uptime: Math.floor((Date.now() - state.startTime) / 1000),
+    executor: state.executorState,
     actions: {
       total: actions.length,
       ...statusCounts,
     },
-  });
+    total_cost_usd: Math.round(totalCost * 100) / 100,
+  };
+}
+
+function handleHealth(
+  _req: Request,
+  state: ServerState,
+): Response {
+  return json(buildStats(state));
 }
 
 // GET / — placeholder (dashboard served by separate web package)
@@ -652,6 +656,28 @@ const routes: Route[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Executor run loop — runs independently of HTTP request lifecycle
+// ---------------------------------------------------------------------------
+
+let executorRunning = false;
+
+async function runExecutorLoop(state: ServerState) {
+  if (executorRunning || !state.executor) return;
+  executorRunning = true;
+  try {
+    await state.executor.run();
+  } finally {
+    executorRunning = false;
+    state.executorState = "idle";
+  }
+}
+
+function kickExecutor(state: ServerState) {
+  if (executorRunning) return;
+  queueMicrotask(() => runExecutorLoop(state));
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -679,6 +705,7 @@ export function startServer(options: ServerOptions = {}) {
       runActionFn: runAction,
       onActionStart: (action) => {
         broadcast(state, "action_started", { action_id: action.id, type: action.type }, action.id);
+        broadcast(state, "stats", buildStats(state));
       },
       onActionEnd: (action, result) => {
         broadcast(state, "action_completed", {
@@ -686,6 +713,7 @@ export function startServer(options: ServerOptions = {}) {
           condition: result.condition,
           cost_usd: result.cost_usd,
         }, action.id);
+        broadcast(state, "stats", buildStats(state));
       },
       onActionWaiting: (action) => {
         broadcast(state, "action_waiting", { action_id: action.id }, action.id);
@@ -694,17 +722,14 @@ export function startServer(options: ServerOptions = {}) {
         broadcast(state, "edge_traversed", { from, to, condition });
       },
       onIdle: () => {
-        const actions = db.listActions();
-        const pending = actions.filter((a) => a.status === "pending").length;
-        broadcast(state, "executor_state", { state: "idle", pending_count: pending });
+        broadcast(state, "executor_state", { state: "idle", pending_count: 0 });
+        broadcast(state, "stats", buildStats(state));
       },
     });
     state.executor = executor;
-    // Start executor loop in background
+    // Start executor loop on next tick — fully decoupled from server startup
     executorState = "running";
-    executor.run().then(() => {
-      executorState = "idle";
-    });
+    kickExecutor(state);
   }
 
   // Make executorState a proxy via getter/setter

@@ -23,7 +23,7 @@ const getInitialState = (): State => {
   return {
     theme: 'light',
     connected: false,
-    health: null,
+    stats: null,
     executorState: null,
   };
 };

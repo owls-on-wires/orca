@@ -350,9 +350,9 @@ export class Executor {
             ? target.iteration + 1
             : target.iteration;
 
-        // Check max_iterations
-        const maxIterations = target.params.max_iterations as number | undefined;
-        if (maxIterations !== undefined && newIteration >= maxIterations) {
+        // Check max_iterations (default: 10 to prevent infinite loops)
+        const maxIterations = (target.params.max_iterations as number | undefined) ?? 10;
+        if (newIteration >= maxIterations) {
           // Exceeded — follow cost_exceeded or stuck edges from the target
           const overrideEdges = [
             ...this.db.getEdgesByCondition(target.id, "cost_exceeded"),
@@ -418,13 +418,17 @@ export class Executor {
     const TERMINAL = new Set(["completed", "failed", "skipped"]);
 
     for (const edge of incoming) {
+      // Self-loops never block
+      if (edge.from_action === actionId) continue;
+
       const src = this.db.getAction(edge.from_action);
       if (!src) return false;
 
       if (TERMINAL.has(src.status)) continue;
 
-      // Inactive source with a fail condition = retry back-edge, don't block
-      if (src.status === "inactive" && edge.condition === "fail") continue;
+      // Inactive source with non-pass condition = retry back-edge, don't block.
+      // Only pass edges from inactive sources block (forward dependencies).
+      if (src.status === "inactive" && edge.condition !== "pass") continue;
 
       // Everything else blocks (inactive deps, pending, running, waiting)
       return false;

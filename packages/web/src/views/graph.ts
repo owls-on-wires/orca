@@ -43,6 +43,7 @@ export interface LayoutNode {
   status: string;
   label: string;
   task: string;
+  project: string;
   iter: number;
   cost: number;
 }
@@ -74,6 +75,7 @@ export function apiToLayout(a: ApiAction): LayoutNode {
     status: a.status,
     label: getLabel(a.id),
     task: getTag(a.tags, 'task'),
+    project: getTag(a.tags, 'project'),
     iter: a.iteration,
     cost: a.cost_usd,
   };
@@ -125,8 +127,8 @@ export function computeColumns(nodes: LayoutNode[], edges: ApiEdge[]): Map<strin
   nodes.forEach(a => { fwd[a.id] = []; indeg[a.id] = 0; });
 
   // Build an index of action positions to detect back-edges.
-  // A fail edge is only a back-edge if the target appears BEFORE the source
-  // in the actions list (meaning it loops back to an earlier action).
+  // A back-edge is ANY edge where the target appears BEFORE the source
+  // in the actions list — regardless of condition (fail, timeout, error, etc.).
   const actionIndex = new Map<string, number>();
   nodes.forEach((a, i) => actionIndex.set(a.id, i));
 
@@ -134,8 +136,7 @@ export function computeColumns(nodes: LayoutNode[], edges: ApiEdge[]): Map<strin
     if (!fwd[e.from_action] || indeg[e.to_action] == null) return;
     const srcIdx = actionIndex.get(e.from_action) ?? 0;
     const tgtIdx = actionIndex.get(e.to_action) ?? 0;
-    const isBackEdge = e.condition === 'fail' && tgtIdx <= srcIdx;
-    if (isBackEdge) return;
+    if (tgtIdx <= srcIdx) return;
     fwd[e.from_action].push(e.to_action);
     indeg[e.to_action]++;
   });
@@ -305,8 +306,9 @@ function initViewport(svgEl: SVGSVGElement, content: { x: number; y: number; w: 
   if (ch === 0 || cw === 0) return;
 
   const containerAspect = cw / ch;
+  const textAbove = 8;
   const textBelow = 16;
-  const svgMinY = Math.min(...actions.map(a => a.y + oy)) - NODE_R - 4;
+  const svgMinY = Math.min(...actions.map(a => a.y + oy)) - NODE_R - textAbove;
   const svgMaxY = Math.max(...actions.map(a => a.y + oy)) + NODE_R + textBelow + 4;
   const rowSpan = svgMaxY - svgMinY;
   const centerY = (svgMinY + svgMaxY) / 2;
@@ -512,14 +514,18 @@ export function renderGraph(container: HTMLElement, opts: GraphOptions) {
       g.appendChild(it);
     }
 
-    const label = svg('text', { x: cx, y: cy + NODE_R + 7, 'text-anchor': 'middle', class: `oc-node__label${selected ? ' oc-node__label--selected' : ''}` });
-    label.textContent = a.label;
-    g.appendChild(label);
+    const typeLabel = svg('text', { x: cx, y: cy - NODE_R - 4, 'text-anchor': 'middle', class: `oc-node__label${selected ? ' oc-node__label--selected' : ''}` });
+    typeLabel.textContent = a.label;
+    g.appendChild(typeLabel);
 
-    if (a.cost > 0) {
-      const ct = svg('text', { x: cx, y: cy + NODE_R + 14, 'text-anchor': 'middle', class: 'oc-node__cost' });
-      ct.textContent = `$${a.cost.toFixed(2)}`;
-      g.appendChild(ct);
+    const taskLabel = svg('text', { x: cx, y: cy + NODE_R + 7, 'text-anchor': 'middle', class: 'oc-node__task' });
+    taskLabel.textContent = `task: ${a.task}`;
+    g.appendChild(taskLabel);
+
+    if (a.project) {
+      const pt = svg('text', { x: cx, y: cy + NODE_R + 14, 'text-anchor': 'middle', class: 'oc-node__task' });
+      pt.textContent = `project: ${a.project}`;
+      g.appendChild(pt);
     }
 
     nodeLayer.appendChild(g);

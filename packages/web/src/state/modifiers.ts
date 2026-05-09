@@ -1,6 +1,6 @@
 import { update } from './state';
-import { HealthData, ExecutorData } from '../types/types';
-import { renderFootline } from '../views/main';
+import { StatsData, ExecutorData } from '../types/types';
+import { renderFootline, renderStatsStrip } from '../views/main';
 
 export const setTheme = (theme: 'light' | 'dark') => {
   update(draft => {
@@ -19,10 +19,12 @@ export const setConnected = (connected: boolean) => {
   renderFootline();
 };
 
-export const setHealth = (health: HealthData) => {
+export const setStats = (stats: StatsData) => {
   update(draft => {
-    draft.health = health;
+    draft.stats = stats;
   });
+  renderStatsStrip();
+  renderFootline();
 };
 
 export const setExecutorState = (data: ExecutorData) => {

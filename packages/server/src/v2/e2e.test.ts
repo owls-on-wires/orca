@@ -215,7 +215,7 @@ describe("e2e: server API", () => {
 
   afterEach(() => {
     clearInterval(serverHandle.heartbeatInterval);
-    serverHandle.server.stop();
+    serverHandle.server.stop(true);
     serverHandle.db.close();
   });
 
@@ -303,7 +303,7 @@ describe("e2e: human action", () => {
 
   afterEach(() => {
     clearInterval(serverHandle.heartbeatInterval);
-    serverHandle.server.stop();
+    serverHandle.server.stop(true);
     serverHandle.db.close();
   });
 
@@ -384,7 +384,7 @@ describe("e2e: SSE events", () => {
 
   afterEach(() => {
     clearInterval(serverHandle.heartbeatInterval);
-    serverHandle.server.stop();
+    serverHandle.server.stop(true);
     serverHandle.db.close();
   });
 
@@ -503,7 +503,7 @@ describe("e2e: tag operations", () => {
 
   afterEach(() => {
     clearInterval(serverHandle.heartbeatInterval);
-    serverHandle.server.stop();
+    serverHandle.server.stop(true);
     serverHandle.db.close();
   });
 

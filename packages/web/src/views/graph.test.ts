@@ -10,7 +10,7 @@ import {
 } from "./graph";
 
 function mkNode(id: string, task: string, extra: Partial<LayoutNode> = {}): LayoutNode {
-  return { id, type: 'agent', status: 'completed', label: id.split('.').pop() || id, task, iter: 0, cost: 0, ...extra };
+  return { id, type: 'agent', status: 'completed', label: id.split('.').pop() || id, task, project: '', iter: 0, cost: 0, ...extra };
 }
 
 function mkAction(id: string, tags: string[], extra: Partial<ApiAction> = {}): ApiAction {

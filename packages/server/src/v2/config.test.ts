@@ -61,17 +61,17 @@ describe("expandConfig", () => {
   test("default edges when no edges map specified", () => {
     expandConfig(minimalConfig, db);
 
-    // develop (index 0): pass → eval (next), fail → develop (first)
+    // develop (index 0): pass → eval (next). Self-loop edges (fail → develop) are skipped.
     const devEdges = db.getEdgesFrom("auth.develop");
-    expect(devEdges).toHaveLength(2);
-    expect(devEdges.find((e) => e.condition === "pass")?.to_action).toBe("auth.eval");
-    expect(devEdges.find((e) => e.condition === "fail")?.to_action).toBe("auth.develop");
+    expect(devEdges).toHaveLength(1);
+    expect(devEdges[0].condition).toBe("pass");
+    expect(devEdges[0].to_action).toBe("auth.eval");
 
-    // eval (last): pass → complete (no edge), fail → develop (first)
+    // eval (last): pass → complete (no edge), all other conditions → develop (first)
     const evalEdges = db.getEdgesFrom("auth.eval");
-    expect(evalEdges).toHaveLength(1);
-    expect(evalEdges[0].condition).toBe("fail");
-    expect(evalEdges[0].to_action).toBe("auth.develop");
+    expect(evalEdges).toHaveLength(6); // fail, max_turns, timeout, cost_exceeded, stuck, error
+    expect(evalEdges.find((e) => e.condition === "fail")?.to_action).toBe("auth.develop");
+    expect(evalEdges.every((e) => e.to_action === "auth.develop")).toBe(true);
   });
 
   test("auto-tagging verification", () => {
@@ -139,11 +139,13 @@ tasks:
     expect(db.getAction("auth.qa")).not.toBeNull();
     expect(db.getAction("auth.supervisor")).not.toBeNull();
 
-    // Verify edges
+    // Verify edges — develop is "first", so its self-loop edges are skipped
     const devEdges = db.getEdgesFrom("auth.develop");
-    expect(devEdges.find((e) => e.condition === "pass")?.to_action).toBe("auth.eval");
-    expect(devEdges.find((e) => e.condition === "fail")?.to_action).toBe("auth.develop");
+    expect(devEdges).toHaveLength(1); // only pass → eval (self-loops skipped)
+    expect(devEdges[0].condition).toBe("pass");
+    expect(devEdges[0].to_action).toBe("auth.eval");
 
+    // eval → develop is NOT a self-loop, so all default edges are created
     const evalEdges = db.getEdgesFrom("auth.eval");
     expect(evalEdges.find((e) => e.condition === "pass")?.to_action).toBe("auth.deploy");
     expect(evalEdges.find((e) => e.condition === "fail")?.to_action).toBe("auth.develop");
@@ -153,7 +155,6 @@ tasks:
     expect(deployEdges.find((e) => e.condition === "fail")?.to_action).toBe("auth.develop");
 
     const qaEdges = db.getEdgesFrom("auth.qa");
-    expect(qaEdges).toHaveLength(2); // fail + max_turns (pass = complete, no edge)
     expect(qaEdges.find((e) => e.condition === "fail")?.to_action).toBe("auth.develop");
     expect(qaEdges.find((e) => e.condition === "max_turns")?.to_action).toBe("auth.supervisor");
   });

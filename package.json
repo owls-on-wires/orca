@@ -2,6 +2,19 @@
   "name": "orca",
   "private": true,
   "workspaces": ["packages/*"],
+  "scripts": {
+    "api": "bun run packages/server/src/v2/server.ts --port 7072",
+    "api:bg": "bun run packages/server/src/v2/server.ts --port 7072 &>/tmp/orca-api.log & echo $! > /tmp/orca-api.pid && echo 'API started on :7072'",
+    "api:stop": "kill $(cat /tmp/orca-api.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/orca-api.pid; echo 'API stopped'",
+    "api:status": "curl -sf http://localhost:7072/health | jq . || echo 'API not running'",
+    "web": "cd packages/web && npx webpack serve --mode development",
+    "web:bg": "cd packages/web && npx webpack serve --mode development &>/tmp/orca-web.log & echo $! > /tmp/orca-web.pid && echo 'Web started on :8095'",
+    "web:stop": "kill $(cat /tmp/orca-web.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/orca-web.pid; echo 'Web stopped'",
+    "dev": "bun run api:bg && bun run web:bg",
+    "dev:stop": "bun run api:stop && bun run web:stop",
+    "fixture:reset": "bash scripts/fixture-reset.sh",
+    "fixture:run": "bash scripts/fixture-run.sh"
+  },
   "devDependencies": {
     "playwright": "^1.59.1"
   }

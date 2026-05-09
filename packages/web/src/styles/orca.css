@@ -306,6 +306,12 @@
   user-select: none;
 }
 .oc-node__label--selected { font-weight: 700; }
+.oc-node__task {
+  font-family: var(--font-mono);
+  font-size: 3.5px;
+  fill: var(--ink-mute);
+  user-select: none;
+}
 .oc-node__cost {
   font-family: var(--font-mono);
   font-size: 4px;

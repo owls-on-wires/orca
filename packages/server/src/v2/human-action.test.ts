@@ -225,6 +225,7 @@ describe("human action - end-to-end via server", () => {
   });
 
   afterEach(() => {
+    clearInterval(server.heartbeatInterval);
     server.server.stop(true);
     server.db.close();
   });

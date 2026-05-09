@@ -7,4 +7,4 @@ bin/orca*
 .playwright-mcp/
 /data/
 /tmp/
-fixtures/calculator/.git/
+fixtures/*/.git/

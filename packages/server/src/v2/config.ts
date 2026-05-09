@@ -170,14 +170,21 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
       const typeDef = typeDefaults[actionType];
       const actionId = `${task.id}.${actionType}`;
 
-      // Get edges map — use defaults if not specified
-      let edgesMap: Partial<Record<EdgeCondition, string>>;
-      if (typeDef.edges) {
-        edgesMap = typeDef.edges;
-      } else {
-        // Default edges: pass → next, fail → first
-        edgesMap = { pass: "next", fail: "first" };
-      }
+      // Get edges map — start with exhaustive defaults, then overlay user config.
+      // Every condition gets a default so no outcome ever goes unhandled.
+      const defaultEdges: Record<string, string> = {
+        pass: "next",
+        fail: "first",
+        max_turns: "first",
+        timeout: "first",
+        cost_exceeded: "first",
+        stuck: "first",
+        error: "first",
+      };
+      const edgesMap: Partial<Record<EdgeCondition, string>> = {
+        ...defaultEdges,
+        ...(typeDef.edges ?? {}),
+      };
 
       // Resolve each edge
       for (const [condition, target] of Object.entries(edgesMap)) {
@@ -194,6 +201,12 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
 
         if (resolved === null) {
           // "complete" — no edge created
+          continue;
+        }
+
+        // Skip self-loop edges — they create infinite loops (e.g. stuck detection)
+        // and block join semantics. If "first" resolves to the current action, skip.
+        if (resolved === actionId) {
           continue;
         }
 

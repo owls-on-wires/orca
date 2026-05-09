@@ -4,7 +4,9 @@ export const getHealth = async () => {
   return api.get<{
     version: string;
     uptime: number;
+    executor: string;
     actions: Record<string, number>;
+    total_cost_usd: number;
   }>('/health');
 };
 

@@ -11,7 +11,7 @@ export const connectSSE = () => {
 
   const SSE_EVENTS = [
     'action_started', 'action_completed', 'action_waiting',
-    'edge_traversed', 'executor_state', 'connected'
+    'edge_traversed', 'executor_state', 'connected', 'stats'
   ];
 
   SSE_EVENTS.forEach(name => {
@@ -22,7 +22,7 @@ export const connectSSE = () => {
     });
   });
 
-  eventSource.onerror = () => {
+  eventSource!.onerror = () => {
     const handlers = listeners.get('error') || [];
     handlers.forEach(fn => fn(null));
   };

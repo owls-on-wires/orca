@@ -67,6 +67,7 @@ describe("v2 server", () => {
   });
 
   afterEach(() => {
+    clearInterval(cleanup.heartbeatInterval);
     server.stop(true);
     cleanup.db.close();
   });

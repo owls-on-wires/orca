@@ -88,8 +88,12 @@ function header() {
 
 function statsStrip() {
   const state = get();
-  const h = state.health?.actions || {};
+  const s = state.stats;
+  const h = s?.actions || {};
   const total = (h.total as number) || 0;
+  const cost = s?.total_cost_usd ?? 0;
+  const execState = s?.executor || state.executorState?.state || 'idle';
+  const inactive = (h.inactive as number) || 0;
 
   const stat = (label: string, value: string, sub: string, cls?: string) => {
     return html.div({ class: 'oc-stat' }, [
@@ -100,15 +104,21 @@ function statsStrip() {
   };
 
   return html.div({ id: 'stats-strip', class: 'oc-stats' }, [
-    stat('total actions', String(total), 'in graph'),
-    stat('running', String(h.running || 0), 'serial mode', 'oc-stat__value--accent'),
+    stat('total actions', String(total), `${inactive} blocked`),
+    stat('running', String(h.running || 0), execState, 'oc-stat__value--accent'),
     stat('pending', String(h.pending || 0), 'queued'),
     stat('completed', String(h.completed || 0), 'passed', 'oc-stat__value--success'),
     stat('failed', String(h.failed || 0), 'in retry', 'oc-stat__value--danger'),
     stat('waiting', String(h.waiting || 0), 'human gate', 'oc-stat__value--gold'),
-    stat('total cost', '$0.00', ''),
+    stat('total cost', `$${cost.toFixed(2)}`, ''),
   ]);
 }
+
+export const renderStatsStrip = () => {
+  const el = document.getElementById('stats-strip');
+  if (!el) return;
+  el.replaceWith(statsStrip());
+};
 
 function filterBar() {
   const tags = [
@@ -133,7 +143,7 @@ function filterBar() {
 
 function footline() {
   const state = get();
-  const execState = state.executorState?.state || 'unknown';
+  const execState = state.stats?.executor || state.executorState?.state || 'unknown';
   const connStatus = state.connected ? 'SSE connected' : 'disconnected';
 
   return html.div({ id: 'footline', class: 'oc-footline' }, [

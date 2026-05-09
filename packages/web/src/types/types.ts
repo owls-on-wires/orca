@@ -1,14 +1,16 @@
 export interface State {
   theme: 'light' | 'dark';
   connected: boolean;
-  health: HealthData | null;
+  stats: StatsData | null;
   executorState: ExecutorData | null;
 }
 
-export interface HealthData {
+export interface StatsData {
   version: string;
   uptime: number;
+  executor: string;
   actions: Record<string, number>;
+  total_cost_usd: number;
 }
 
 export interface ExecutorData {
