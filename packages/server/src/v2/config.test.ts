@@ -238,7 +238,7 @@ tasks:
     prompt: "Build auth"
     actions: [develop, nonexistent]
 `;
-    expect(() => expandConfig(yaml, db)).toThrow(/Unknown action type "nonexistent"/);
+    expect(() => expandConfig(yaml, db)).toThrow(/Unknown action type nonexistent/);
   });
 
   test("invalid config - missing name", () => {
@@ -278,5 +278,105 @@ tasks:
     expect(action!.params.max_iterations).toBe(5);
     expect(action!.params.max_cost).toBe(2.5);
     expect(action!.params.model).toBe("sonnet");
+  });
+
+  test("per-task overrides merge into action params", () => {
+    const yaml = `
+name: test
+defaults:
+  types:
+    develop:
+      type: agent
+      max_turns: 50
+    eval:
+      type: command
+      command: "bun test"
+      timeout: 30
+      edges: { pass: complete, fail: first }
+tasks:
+  - id: auth
+    prompt: "Fix auth"
+    actions: [develop, eval]
+    overrides:
+      eval:
+        command: "bun test test/auth.test.ts"
+`;
+    expandConfig(yaml, db);
+
+    const evalAction = db.getAction("auth.eval");
+    expect(evalAction!.params.command).toBe("bun test test/auth.test.ts");
+    expect(evalAction!.params.timeout).toBe(30);
+  });
+
+  test("template default actions used when task omits actions", () => {
+    const yaml = `
+name: test
+templates:
+  bugfix:
+    actions: [develop, eval]
+    types:
+      develop:
+        type: agent
+        max_turns: 50
+      eval:
+        type: command
+        command: "bun test"
+tasks:
+  - id: fix-bug
+    template: bugfix
+    prompt: "Fix the bug"
+`;
+    expandConfig(yaml, db);
+
+    const dev = db.getAction("fix-bug.develop");
+    const ev = db.getAction("fix-bug.eval");
+    expect(dev).not.toBeNull();
+    expect(ev).not.toBeNull();
+    expect(dev!.type).toBe("agent");
+    expect(ev!.type).toBe("command");
+  });
+
+  test("task actions override template default actions", () => {
+    const yaml = `
+name: test
+templates:
+  feature:
+    actions: [develop, eval, qa]
+    types:
+      develop:
+        type: agent
+      eval:
+        type: command
+        command: "bun test"
+      qa:
+        type: agent
+tasks:
+  - id: simple
+    template: feature
+    prompt: "Simple task"
+    actions: [develop, eval]
+`;
+    expandConfig(yaml, db);
+
+    const dev = db.getAction("simple.develop");
+    const ev = db.getAction("simple.eval");
+    const qa = db.getAction("simple.qa");
+    expect(dev).not.toBeNull();
+    expect(ev).not.toBeNull();
+    expect(qa).toBeNull();
+  });
+
+  test("error when task has no actions and no template default", () => {
+    const yaml = `
+name: test
+defaults:
+  types:
+    develop:
+      type: agent
+tasks:
+  - id: broken
+    prompt: "No actions"
+`;
+    expect(() => expandConfig(yaml, db)).toThrow(/no actions/);
   });
 });

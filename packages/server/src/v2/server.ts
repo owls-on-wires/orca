@@ -173,19 +173,33 @@ async function handleImport(
   if (!body) return jsonError("Invalid JSON body");
 
   let yamlString: string | undefined;
-  if (typeof body.yaml === "string") {
+  let sourceDir: string | undefined;
+
+  if (typeof body.dir === "string") {
+    const { readFileSync, existsSync } = await import("fs");
+    const { resolve, join } = await import("path");
+    const dir = resolve(body.dir as string);
+    const specName = (body.spec_path as string) || "project.orca.yaml";
+    const specPath = join(dir, specName);
+    if (!existsSync(specPath)) return jsonError(`Config not found: ${specPath}`);
+    yamlString = readFileSync(specPath, "utf8");
+    sourceDir = dir;
+  } else if (typeof body.yaml === "string") {
     yamlString = body.yaml;
+    sourceDir = typeof body.source_dir === "string" ? body.source_dir : undefined;
   } else if (body.config) {
-    // Serialize config object to YAML-like JSON — expandConfig expects YAML
-    // but accepts anything js-yaml can parse, so we pass it as YAML via JSON
     const yaml = await import("js-yaml");
     yamlString = yaml.dump(body.config);
+  } else if (typeof body.template === "string" && typeof body.project === "string") {
+    const resolved = await resolveTemplate(body.project as string, body.template as string, body.tasks as any[], state.db);
+    if (typeof resolved === "string") return jsonError(resolved);
+    yamlString = resolved.yaml;
   }
 
-  if (!yamlString) return jsonError("Body must include 'yaml' string or 'config' object");
+  if (!yamlString) return jsonError("Body must include 'dir', 'yaml', 'config', or 'template'+'project'+'tasks'");
 
   try {
-    expandConfig(yamlString, state.db);
+    expandConfig(yamlString, state.db, sourceDir);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return jsonError(msg);
@@ -194,13 +208,55 @@ async function handleImport(
   const actions = state.db.listActions();
   const actionIds = actions.map((a) => a.id);
 
-  // Count edges
   let edgeCount = 0;
   for (const a of actions) {
     edgeCount += state.db.getEdgesFrom(a.id).length;
   }
 
   return json({ actions: actionIds, edges: edgeCount });
+}
+
+async function resolveTemplate(
+  projectId: string,
+  templateName: string,
+  tasks: Array<{ id: string; prompt: string; actions?: string[]; depends_on?: string[]; tags?: string[] }>,
+  db: OrcaDatabase,
+): Promise<{ yaml: string } | string> {
+  const { readFileSync, existsSync } = await import("fs");
+  const { resolve, join } = await import("path");
+  const yaml = await import("js-yaml");
+
+  const project = db.getProject(projectId);
+  if (!project) return `Project not found: ${projectId}`;
+
+  if (!tasks || !Array.isArray(tasks) || tasks.length === 0) {
+    return "Missing or empty 'tasks' array";
+  }
+
+  // Read the project's orca yaml to find templates
+  const orcaPath = join(resolve(project.project_dir), "project.orca.yaml");
+  if (!existsSync(orcaPath)) return `Project config not found: ${orcaPath}`;
+
+  const orcaYaml = readFileSync(orcaPath, "utf8");
+  const orcaConfig = yaml.load(orcaYaml) as Record<string, unknown>;
+  const templates = orcaConfig.templates as Record<string, unknown> | undefined;
+
+  if (!templates || !templates[templateName]) {
+    return `Template "${templateName}" not found in ${orcaPath}`;
+  }
+
+  // Tag each task with the template name
+  const taggedTasks = tasks.map(t => ({ ...t, template: templateName }));
+
+  const merged = {
+    name: projectId,
+    project_dir: project.project_dir,
+    defaults: orcaConfig.defaults,
+    templates,
+    tasks: taggedTasks,
+  };
+
+  return { yaml: yaml.dump(merged) };
 }
 
 // GET /actions
@@ -709,7 +765,8 @@ export function startServer(options: ServerOptions = {}) {
 if (import.meta.main) {
   const args = process.argv.slice(2);
   let port = 7072;
-  let dbPath = ".orca/orca.db";
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  let dbPath = `${home}/.orca/orca.db`;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) {

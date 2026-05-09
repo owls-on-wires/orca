@@ -1,5 +1,8 @@
 {
   "name": "orca",
   "private": true,
-  "workspaces": ["packages/*"]
+  "workspaces": ["packages/*"],
+  "devDependencies": {
+    "playwright": "^1.59.1"
+  }
 }

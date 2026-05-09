@@ -140,11 +140,16 @@ export class Executor {
         ? this.db.getProject(runningAction.project_id)
         : null;
 
+      const projectDir = project?.project_dir ?? this.options.projectDir;
+      const logDir = projectDir + "/.orca/logs";
+      const logPath = logDir + "/" + runningAction.id + ".jsonl";
+
       const runOptions: RunOptions = {
-        projectDir: project?.project_dir ?? this.options.projectDir,
+        projectDir,
         model: project?.model ?? this.options.model,
         scope: project?.scope as any ?? this.options.scope,
         nix: project?.nix ?? undefined,
+        logPath,
       };
 
       const result = await this.runActionFn(runningAction, predecessorOutputs, runOptions);
@@ -397,42 +402,32 @@ export class Executor {
   /**
    * Check whether all incoming edges to an inactive action have been satisfied.
    *
-   * An incoming edge is "satisfied" when its source action has reached a
-   * terminal state (completed, failed, skipped). This means the source ran
-   * and produced a result — the edge either fired (condition matched) or
-   * didn't (condition didn't match, but the source is done).
+   * An incoming edge blocks activation unless:
+   * - Its source is in a terminal state (completed, failed, skipped), OR
+   * - The edge is a retry/back-edge (source is downstream of the target,
+   *   meaning it hasn't run yet and is part of a loop, not a dependency)
    *
-   * Edges from sources that are inactive or pending are NOT blocking —
-   * they're retry/loop-back edges from downstream actions that haven't
-   * run yet and can't block initial activation.
-   *
-   * Join semantics (diamond): D has incoming from B[pass] and C[pass].
-   * B completes → check D → C is pending (not terminal) → C is blocking → wait.
-   * C completes → check D → B completed, C completed → all satisfied → activate.
-   *
-   * Retry edges (loop): develop has incoming from eval[fail].
-   * eval is inactive (hasn't run yet) → not blocking → develop activates.
+   * Back-edge detection: if the source is inactive AND the edge condition
+   * is "fail" (retry loops), it's a back-edge and doesn't block.
+   * All other inactive sources are upstream dependencies and DO block.
    */
   private allIncomingEdgesSatisfied(actionId: string): boolean {
     const incoming = this.db.getEdgesTo(actionId);
     if (incoming.length === 0) return true;
 
-    const sourceIds = new Set(incoming.map(e => e.from_action));
     const TERMINAL = new Set(["completed", "failed", "skipped"]);
-    const NON_BLOCKING = new Set(["inactive"]);
 
-    for (const srcId of sourceIds) {
-      const src = this.db.getAction(srcId);
+    for (const edge of incoming) {
+      const src = this.db.getAction(edge.from_action);
       if (!src) return false;
 
-      // Inactive sources are non-blocking (retry edges from downstream)
-      if (NON_BLOCKING.has(src.status)) continue;
+      if (TERMINAL.has(src.status)) continue;
 
-      // Sources that are pending, running, or waiting are blocking —
-      // they're upstream and haven't finished yet
-      if (!TERMINAL.has(src.status)) return false;
+      // Inactive source with a fail condition = retry back-edge, don't block
+      if (src.status === "inactive" && edge.condition === "fail") continue;
 
-      // Terminal sources are satisfied (they ran and produced a result)
+      // Everything else blocks (inactive deps, pending, running, waiting)
+      return false;
     }
 
     return true;

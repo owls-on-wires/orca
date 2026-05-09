@@ -65,6 +65,11 @@ export interface ActionTypeDefaults {
   edges?: Partial<Record<EdgeCondition, string>>;
 }
 
+export interface TemplateConfig {
+  types: Record<string, ActionTypeDefaults>;
+  actions?: string[];
+}
+
 export interface OrcaV2Config {
   name: string;
   project_dir?: string;
@@ -75,13 +80,16 @@ export interface OrcaV2Config {
   defaults?: {
     types?: Record<string, ActionTypeDefaults>;
   };
+  templates?: Record<string, TemplateConfig>;
   tasks: V2TaskConfig[];
 }
 
 export interface V2TaskConfig {
   id: string;
   prompt: string;
-  actions: string[];
+  actions?: string[];
+  template?: string;
+  overrides?: Record<string, Record<string, unknown>>;
   depends_on?: string[];
   tags?: string[];
   budget?: { max_iterations?: number; max_cost?: number };

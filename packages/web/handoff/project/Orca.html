@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en" class="theme-light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Orca · 0ne Zero</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playwrite+DE+SAS:wght@100..400&display=swap">
+  <link rel="stylesheet" href="colors_and_type.css" />
+  <link rel="stylesheet" href="orca.css" />
+</head>
+<body class="oz-paper proj-teal theme-light">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <script type="text/babel" src="fixture.jsx"></script>
+  <script type="text/babel" src="graph.jsx"></script>
+  <script type="text/babel" src="detail.jsx"></script>
+
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useMemo, useEffect } = React;
+
+    // ── Header ────────────────────────────────────────────────────────
+    function OrcaHeader({ theme, onToggleTheme }) {
+      return (
+        <div className="oc-pageline">
+          <div className="oc-pageline__title">
+            <span className="oz-brace oz-brace--l">{'{'}</span>
+            <span className="oz-word">0rca</span>
+            <span className="oz-brace oz-brace--r">{'}'}</span>
+          </div>
+          <div className="oc-pageline__center">
+            <div className="c-path">
+              <span className="c-slash">/projects/</span><span className="c-name">onezero-app</span>
+            </div>
+            <div className="c-tag">release/v1.5.0</div>
+          </div>
+          <div className="oc-pageline__actions">
+            <button className="oz-btn oc-btn">Import YAML</button>
+            <button className="oz-btn oc-btn">+ Action</button>
+            <button className="oz-btn oz-btn--primary oc-btn">+ Task</button>
+            <button
+              className="oc-themetoggle"
+              aria-label="toggle theme"
+              onClick={onToggleTheme}
+              title={theme === "light" ? "Switch to dark" : "Switch to light"}
+            >{theme === "light" ? "☾" : "☀"}</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Stats ─────────────────────────────────────────────────────────
+    function StatsStrip({ actions }) {
+      const counts = useMemo(() => {
+        const c = { total: actions.length, pending: 0, running: 0, completed: 0, failed: 0, waiting: 0 };
+        actions.forEach((a) => { if (c[a.status] != null) c[a.status]++; });
+        return c;
+      }, [actions]);
+      const totalCost = actions.reduce((sum, a) => sum + (a.cost || 0), 0);
+      return (
+        <div className="oc-stats">
+          <div className="oc-stat">
+            <span className="oc-stat__label">total actions</span>
+            <span className="oc-stat__value">{counts.total}</span>
+            <span className="oc-stat__sub">in 1 task</span>
+          </div>
+          <div className="oc-stat">
+            <span className="oc-stat__label">running</span>
+            <span className="oc-stat__value oc-stat__value--accent">{counts.running}</span>
+            <span className="oc-stat__sub">serial mode</span>
+          </div>
+          <div className="oc-stat">
+            <span className="oc-stat__label">pending</span>
+            <span className="oc-stat__value">{counts.pending}</span>
+            <span className="oc-stat__sub">queued</span>
+          </div>
+          <div className="oc-stat">
+            <span className="oc-stat__label">completed</span>
+            <span className="oc-stat__value oc-stat__value--success">{counts.completed}</span>
+            <span className="oc-stat__sub">passed</span>
+          </div>
+          <div className="oc-stat">
+            <span className="oc-stat__label">failed</span>
+            <span className="oc-stat__value oc-stat__value--danger">{counts.failed}</span>
+            <span className="oc-stat__sub">in retry</span>
+          </div>
+          <div className="oc-stat">
+            <span className="oc-stat__label">waiting</span>
+            <span className="oc-stat__value oc-stat__value--gold">{counts.waiting}</span>
+            <span className="oc-stat__sub">human gate</span>
+          </div>
+          <div className="oc-stat">
+            <span className="oc-stat__label">total cost</span>
+            <span className="oc-stat__value">${totalCost.toFixed(2)}</span>
+            <span className="oc-stat__sub">$0.41 / min</span>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Filter bar ────────────────────────────────────────────────────
+    function FilterBar({ tags, active, onToggle }) {
+      return (
+        <div className="oc-filter">
+          <span className="oc-filter__label">filter</span>
+          {tags.map((t) => (
+            <button key={t.key}
+                    className={`oc-tag ${active.includes(t.key) ? "is-active" : ""}`}
+                    onClick={() => onToggle(t.key)}>
+              {t.dot && <span className="oc-tag__dot" style={{ background: t.dot }}/>}
+              {t.label}
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    // ── Footline ──────────────────────────────────────────────────────
+    function Footline() {
+      return (
+        <div className="oc-footline">
+          <span>scheduler · serial · idle when nothing ready</span>
+          <span>state · <code>orca.sqlite</code> · 482 events</span>
+          <span className="oc-footline__rate">live · SSE connected · 0 lag</span>
+        </div>
+      );
+    }
+
+    // ── App ───────────────────────────────────────────────────────────
+    function App() {
+      const [theme, setTheme] = useState("light");
+      const [selectedId, setSelectedId] = useState("M");
+      const [hoverId, setHoverId] = useState(null);
+      const [activeTags, setActiveTags] = useState([]);
+
+      useEffect(() => {
+        const html = document.documentElement;
+        const body = document.body;
+        html.classList.toggle("theme-dark", theme === "dark");
+        html.classList.toggle("theme-light", theme === "light");
+        body.classList.toggle("theme-dark", theme === "dark");
+        body.classList.toggle("theme-light", theme === "light");
+      }, [theme]);
+
+      const fixture = window.ORCA_FIXTURE;
+      const action = fixture.actions.find((a) => a.id === selectedId) || null;
+
+      const tags = [
+        { key: "task:release",     label: "task:release" },
+        { key: "type:agent",       label: "type:agent" },
+        { key: "type:command",     label: "type:command" },
+        { key: "status:running",   label: "running",   dot: "var(--accent)" },
+        { key: "status:failed",    label: "failed",    dot: "var(--danger)" },
+        { key: "status:waiting",   label: "waiting",   dot: "var(--gold)" },
+        { key: "status:completed", label: "completed", dot: "var(--success)" },
+      ];
+
+      const toggleTag = (k) => setActiveTags((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]);
+
+      return (
+        <div className="oc-app oz-enter">
+          <OrcaHeader theme={theme} onToggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}/>
+          <StatsStrip actions={fixture.actions}/>
+          <FilterBar tags={tags} active={activeTags} onToggle={toggleTag}/>
+
+          <div className="oc-app__body">
+            <OrcaGraph
+              fixture={fixture}
+              selectedId={selectedId}
+              hoverId={hoverId}
+              onSelect={setSelectedId}
+              onHover={setHoverId}
+            />
+            <OrcaDetail action={action} fixture={fixture}/>
+          </div>
+
+          <Footline/>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

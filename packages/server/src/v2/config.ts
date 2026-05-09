@@ -15,8 +15,12 @@ import {
 /**
  * Parse YAML config and expand tasks into actions + edges in the database.
  * Returns the parsed config; side effect: populates DB with actions and edges.
+ *
+ * @param sourceDir — directory the YAML was loaded from. project_dir is
+ *   resolved relative to this. If not provided, project_dir must be absolute.
  */
-export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config {
+export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: string): OrcaV2Config {
+  const { resolve } = require("path") as typeof import("path");
   const config = yaml.load(yamlString) as OrcaV2Config;
 
   if (!config || !config.tasks || !Array.isArray(config.tasks)) {
@@ -26,10 +30,16 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
     throw new Error("Invalid config: missing name");
   }
 
+  // Resolve project_dir to absolute path relative to sourceDir
+  const rawProjectDir = config.project_dir ?? ".";
+  const resolvedProjectDir = sourceDir
+    ? resolve(sourceDir, rawProjectDir)
+    : resolve(rawProjectDir);
+
   // Create project record
   const project = createProject({
     id: config.name,
-    project_dir: config.project_dir ?? ".",
+    project_dir: resolvedProjectDir,
     model: config.model,
     nix: config.nix,
     git: config.git,
@@ -43,14 +53,34 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
   }
   db.insertProject(project);
 
-  const typeDefaults = config.defaults?.types ?? {};
+  const globalTypeDefaults = config.defaults?.types ?? {};
 
-  // Validate all action types exist in defaults
+  // Resolve type defaults for a task: task's template types > global defaults
+  function getTypeDefaults(task: V2TaskConfig): Record<string, ActionTypeDefaults> {
+    if (task.template && config.templates?.[task.template]) {
+      return { ...globalTypeDefaults, ...config.templates[task.template].types };
+    }
+    return globalTypeDefaults;
+  }
+
+  // Resolve actions list: explicit on task > template default > error
+  function getActions(task: V2TaskConfig): string[] {
+    if (task.actions && task.actions.length > 0) return task.actions;
+    if (task.template && config.templates?.[task.template]?.actions) {
+      return config.templates[task.template].actions!;
+    }
+    throw new Error("Task " + task.id + " has no actions and no template with default actions");
+  }
+
+  // Validate all action types exist in their resolved defaults
   for (const task of config.tasks) {
-    for (const actionType of task.actions) {
-      if (!typeDefaults[actionType]) {
+    const td = getTypeDefaults(task);
+    const actions = getActions(task);
+    for (const actionType of actions) {
+      if (!td[actionType]) {
+        const tpl = task.template || "none";
         throw new Error(
-          `Unknown action type "${actionType}" in task "${task.id}" — not defined in defaults.types`,
+          "Unknown action type " + actionType + " in task " + task.id + " (template: " + tpl + ")",
         );
       }
     }
@@ -63,9 +93,11 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
   // Phase 1: Expand tasks into actions
   for (const task of config.tasks) {
     const actions: ActionConfig[] = [];
+    const typeDefaults = getTypeDefaults(task);
+    const actionList = getActions(task);
 
-    for (let i = 0; i < task.actions.length; i++) {
-      const actionType = task.actions[i];
+    for (let i = 0; i < actionList.length; i++) {
+      const actionType = actionList[i];
       const typeDef = typeDefaults[actionType];
       const actionId = `${task.id}.${actionType}`;
 
@@ -73,8 +105,14 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
       const isFirst = i === 0 && (!task.depends_on || task.depends_on.length === 0);
       const status = isFirst ? "pending" : "inactive";
 
-      // Merge params: type defaults + budget
+      // Merge params: type defaults + top-level type fields (command, timeout, etc.)
+      const reservedKeys = new Set(['type', 'params', 'edges']);
+      const topLevelParams: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(typeDef)) {
+        if (!reservedKeys.has(k)) topLevelParams[k] = v;
+      }
       const params: Record<string, unknown> = {
+        ...topLevelParams,
         ...(typeDef.params ?? {}),
       };
 
@@ -91,6 +129,11 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
         if (task.budget.max_cost !== undefined) {
           params.max_cost = task.budget.max_cost;
         }
+      }
+
+      // Apply per-task overrides for this action type
+      if (task.overrides?.[actionType]) {
+        Object.assign(params, task.overrides[actionType]);
       }
 
       // Auto-generate tags
@@ -119,9 +162,11 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
   // Phase 2: Generate edges and auto-create actions from shorthands
   for (const task of config.tasks) {
     const actions = taskActions.get(task.id)!;
+    const typeDefaults = getTypeDefaults(task);
 
-    for (let i = 0; i < task.actions.length; i++) {
-      const actionType = task.actions[i];
+    const resolvedActions = getActions(task);
+    for (let i = 0; i < resolvedActions.length; i++) {
+      const actionType = resolvedActions[i];
       const typeDef = typeDefaults[actionType];
       const actionId = `${task.id}.${actionType}`;
 
@@ -139,7 +184,7 @@ export function expandConfig(yamlString: string, db: OrcaDatabase): OrcaV2Config
         const resolved = resolveTarget(
           target,
           task.id,
-          task.actions,
+          resolvedActions,
           i,
           typeDefaults,
           taskActions,
@@ -236,7 +281,13 @@ function resolveTarget(
         const exists = actions.some((a) => a.id === autoActionId);
         if (!exists) {
           const typeDef = typeDefaults[target];
+          const autoReserved = new Set(['type', 'params', 'edges']);
+          const autoTopLevel: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(typeDef)) {
+            if (!autoReserved.has(k)) autoTopLevel[k] = v;
+          }
           const params: Record<string, unknown> = {
+            ...autoTopLevel,
             ...(typeDef.params ?? {}),
           };
           if (typeDef.type === "agent" && task.prompt) {
