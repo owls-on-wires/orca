@@ -7,11 +7,12 @@ import { OrcaDatabase } from "./db";
 import { expandConfig, reimportTasks } from "./config";
 import { Executor, type ExecutorOptions } from "./executor";
 import { runAction } from "./action-runner";
-import type {
-  ActionConfig,
-  ActionStatus,
-  EdgeCondition,
-  ActionTypeDefaults,
+import {
+  createAction,
+  type ActionConfig,
+  type ActionStatus,
+  type EdgeCondition,
+  type ActionTypeDefaults,
 } from "./schema";
 
 // ---------------------------------------------------------------------------
@@ -316,6 +317,39 @@ function handleListActions(
     type: type || undefined,
   });
   return json(actions);
+}
+
+// POST /actions
+async function handleCreateAction(
+  req: Request,
+  state: ServerState,
+): Promise<Response> {
+  const body = (await parseBody(req)) as Record<string, unknown> | null;
+  if (!body) return jsonError("Invalid JSON body");
+
+  const id = body.id as string | undefined;
+  const type = body.type as string | undefined;
+  if (!id || typeof id !== "string") return jsonError("Missing required field: id");
+  if (!type || (type !== "agent" && type !== "command")) {
+    return jsonError("Missing or invalid field: type (must be 'agent' or 'command')");
+  }
+
+  // Check for duplicate
+  if (state.db.getAction(id)) {
+    return jsonError(`Action "${id}" already exists`, 409);
+  }
+
+  const action = createAction({
+    id,
+    type: type as "agent" | "command",
+    status: (body.status as ActionStatus) ?? "inactive",
+    project_id: (body.project_id as string) ?? null,
+    params: (body.params as Record<string, unknown>) ?? {},
+    tags: (body.tags as string[]) ?? [],
+  });
+
+  state.db.insertAction(action);
+  return json(action, 201);
 }
 
 // GET /actions/:id
@@ -702,6 +736,7 @@ const routes: Route[] = [
   defineRoute("POST", "/import", handleImport),
   defineRoute("POST", "/reimport", handleReimport),
   defineRoute("GET", "/events", handleSSE),
+  defineRoute("POST", "/actions", handleCreateAction),
   defineRoute("GET", "/actions", handleListActions),
   defineRoute("PATCH", "/actions", handleBulkUpdate),
   defineRoute("GET", "/actions/:id/logs", handleGetLogs),

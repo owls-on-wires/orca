@@ -72,6 +72,78 @@ describe("v2 server", () => {
     cleanup.db.close();
   });
 
+  // ── POST /actions (create) ──
+
+  it("POST /actions creates an action", async () => {
+    const { status, body } = await post("/actions", {
+      id: "my-task.develop",
+      type: "agent",
+      params: { prompt: "Build something" },
+      tags: ["task:my-task", "type:develop"],
+    });
+    expect(status).toBe(201);
+    expect(body.id).toBe("my-task.develop");
+    expect(body.type).toBe("agent");
+    expect(body.status).toBe("inactive");
+    expect(body.params.prompt).toBe("Build something");
+    expect(body.tags).toContain("task:my-task");
+  });
+
+  it("POST /actions defaults status to inactive", async () => {
+    const { body } = await post("/actions", { id: "a.b", type: "command" });
+    expect(body.status).toBe("inactive");
+  });
+
+  it("POST /actions accepts explicit status", async () => {
+    const { body } = await post("/actions", {
+      id: "a.b",
+      type: "agent",
+      status: "pending",
+    });
+    expect(body.status).toBe("pending");
+  });
+
+  it("POST /actions returns 409 for duplicate id", async () => {
+    await post("/actions", { id: "dup.action", type: "agent" });
+    const { status, body } = await post("/actions", { id: "dup.action", type: "agent" });
+    expect(status).toBe(409);
+    expect(body.error).toContain("already exists");
+  });
+
+  it("POST /actions returns 400 for missing id", async () => {
+    const { status } = await post("/actions", { type: "agent" });
+    expect(status).toBe(400);
+  });
+
+  it("POST /actions returns 400 for missing type", async () => {
+    const { status } = await post("/actions", { id: "no-type" });
+    expect(status).toBe(400);
+  });
+
+  it("POST /actions returns 400 for invalid type", async () => {
+    const { status } = await post("/actions", { id: "bad", type: "invalid" });
+    expect(status).toBe(400);
+  });
+
+  it("POST /actions + POST /edges builds a chain", async () => {
+    // Create two actions
+    await post("/actions", { id: "chain.a", type: "agent", status: "pending" });
+    await post("/actions", { id: "chain.b", type: "command", params: { command: "echo ok" } });
+
+    // Wire them
+    const { status, body } = await post("/edges", {
+      from_action: "chain.a",
+      to_action: "chain.b",
+      condition: "pass",
+    });
+    expect(status).toBe(200);
+
+    // Verify edge exists
+    const { body: detail } = await fetchJson("/actions/chain.a");
+    expect(detail.edges.from).toHaveLength(1);
+    expect(detail.edges.from[0].to_action).toBe("chain.b");
+  });
+
   // ── POST /import ──
 
   it("POST /import creates actions and edges", async () => {

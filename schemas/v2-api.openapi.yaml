@@ -102,6 +102,58 @@ paths:
           $ref: "#/components/responses/BadRequest"
 
   /actions:
+    post:
+      tags: [Actions]
+      summary: Create a new action
+      description: >
+        Creates a single action directly (without config expansion).
+        Useful for dynamic task creation by supervisor/planner agents.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Unique action ID (e.g., "auth.develop")
+                type:
+                  $ref: "#/components/schemas/ActionType"
+                status:
+                  $ref: "#/components/schemas/ActionStatus"
+                  default: inactive
+                project_id:
+                  type: string
+                  nullable: true
+                params:
+                  type: object
+                  additionalProperties: true
+                  default: {}
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  default: []
+              required: [id, type]
+      responses:
+        "201":
+          description: Action created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Action with this ID already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
     get:
       tags: [Actions]
       summary: List actions with optional filters

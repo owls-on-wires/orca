@@ -34,7 +34,7 @@ Bun REST API with bugs to fix and features to add. Tests the full TDD retry loop
 
 ## bookmark-api
 
-Full REST API built from scratch via TDD. Agents write tests first, then implement. Agentic QA tests live endpoints with curl. Most complex fixture — 17 tasks across 8 phases.
+Full REST API built from scratch via TDD. Agents write tests first, then implement. Agentic QA tests live endpoints with curl. Most complex static fixture — 17 tasks across 8 phases.
 
 | | |
 |---|---|
@@ -49,6 +49,25 @@ Full REST API built from scratch via TDD. Agents write tests first, then impleme
 
 **Features built**: CRUD, tags, favorites, search, sorting, pagination, collections, archive, URL validation, bulk import/export, click tracking, stats dashboard, notes
 
+## link-board
+
+Link-sharing platform (like Hacker News) built entirely via **dynamic tasking**. The graph starts with a single planner action — no pre-defined tasks. The planner agent reads an epic list, decomposes each epic into TDD tasks, and creates them on the fly via the orca HTTP API.
+
+| | |
+|---|---|
+| **Type** | REST API (Bun.serve, SQLite) |
+| **Tasks** | ~15-20 (dynamically created) |
+| **Actions** | ~55-65 (dynamically created) |
+| **Stages** | write-tests → develop → eval (created by planner) |
+| **Testing** | Unit tests (bun test), created by agents |
+| **Templates** | None — planner creates raw actions via POST /actions |
+| **Graph** | Grows dynamically — planner → [epic tasks] → planner → [epic tasks] → ... |
+| **Starting state** | Bare scaffold + EPICS.md + ORCA-API.yaml. Single planner action. |
+
+**Epics**: Users & Auth, Links (submit/vote/sort), Threaded Comments, Profiles & Karma, Moderation & Search
+
+**Key difference**: No SPEC.md, no pre-defined tasks, no templates used at runtime. The planner agent is the architect — it decides the schema, endpoints, task decomposition, and test strategy. The orca API schema (ORCA-API.yaml) tells the planner how to manipulate the graph.
+
 ---
 
 ## Planned
@@ -58,7 +77,4 @@ Future fixtures to expand coverage:
 - **fullstack-app** — Frontend + backend, multi-process (API server + dev server), browser-based QA via Playwright
 - **microservices** — Multi-container (docker-compose), inter-service communication, agent-managed infrastructure
 - **monorepo** — Workspace with shared packages, cross-package dependencies, coordinated releases
-
-- dynamic-tasking -- an agent at the end of each dev cycle is reponsible for interpreting a broad "target" list of features, and breaking it down into smaller "sprints", and then adding all tasks to the graph dynamically to continue execution until the target is complete
-
-- self-improvement -- same as dynamic tasking, but open-ended; system suggests new ways to improve itself, and implements
+- **self-improvement** — Open-ended dynamic tasking; system suggests improvements to itself and implements them
