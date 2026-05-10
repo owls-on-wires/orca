@@ -33,6 +33,7 @@ export interface RunOptions {
   scope?: ScopeConfig;
   nix?: NixConfig;
   logPath?: string;
+  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
 }
 
 export interface PredecessorOutput {
@@ -123,7 +124,7 @@ async function runAgentAction(
     logPath: options.logPath,
     systemPrompt,
     label: action.id,
-  });
+  }, options.onToolUse);
 
   // Always extract cost/turns/duration regardless of subtype
   const cost_usd = result.costUsd;

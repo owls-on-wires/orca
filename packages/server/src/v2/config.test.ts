@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { OrcaDatabase } from "./db";
-import { expandConfig } from "./config";
+import { expandConfig, reimportTasks } from "./config";
 
 let db: OrcaDatabase;
 
@@ -379,5 +379,215 @@ tasks:
     prompt: "No actions"
 `;
     expect(() => expandConfig(yaml, db)).toThrow(/no actions/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reimportTasks
+// ---------------------------------------------------------------------------
+
+const reimportConfig = `
+name: reimport-test
+defaults:
+  types:
+    develop:
+      type: agent
+    eval:
+      type: command
+      command: "bun test"
+      edges: { pass: next, fail: develop }
+    qa:
+      type: command
+      command: "tsc --noEmit"
+      edges: { fail: develop }
+tasks:
+  - id: task-a
+    prompt: "Build A"
+    actions: [develop, eval]
+  - id: task-b
+    prompt: "Build B"
+    actions: [develop, eval]
+    depends_on: [task-a]
+  - id: task-c
+    prompt: "Build C"
+    actions: [develop, eval, qa]
+    depends_on: [task-b]
+`;
+
+describe("reimportTasks", () => {
+  test("replaces actions for specified task only", () => {
+    expandConfig(reimportConfig, db);
+
+    // Modify task-b's develop to simulate progress
+    db.updateAction("task-b.develop", { status: "completed", output: { status: "passed" } });
+
+    // Re-import task-b (should reset it)
+    const result = reimportTasks(reimportConfig, db, ["task-b"]);
+
+    expect(result.replaced).toEqual(["task-b"]);
+    expect(result.actions).toContain("task-b.develop");
+    expect(result.actions).toContain("task-b.eval");
+
+    // task-b actions are fresh (inactive status, no output)
+    const dev = db.getAction("task-b.develop")!;
+    expect(dev.status).toBe("inactive");
+    expect(dev.output).toBeNull();
+
+    // task-a is untouched
+    expect(db.getAction("task-a.develop")!.status).toBe("pending");
+  });
+
+  test("preserves other tasks' state", () => {
+    expandConfig(reimportConfig, db);
+
+    // Mark task-a as completed
+    db.updateAction("task-a.develop", { status: "completed" });
+    db.updateAction("task-a.eval", { status: "completed", output: { status: "passed" } });
+
+    // Re-import task-b
+    reimportTasks(reimportConfig, db, ["task-b"]);
+
+    // task-a still completed
+    expect(db.getAction("task-a.develop")!.status).toBe("completed");
+    expect(db.getAction("task-a.eval")!.status).toBe("completed");
+
+    // task-c still exists and untouched
+    expect(db.getAction("task-c.develop")).not.toBeNull();
+  });
+
+  test("re-creates intra-task edges", () => {
+    expandConfig(reimportConfig, db);
+    reimportTasks(reimportConfig, db, ["task-b"]);
+
+    // task-b.develop → task-b.eval [pass] should exist
+    const devEdges = db.getEdgesFrom("task-b.develop");
+    const passEdge = devEdges.find((e) => e.condition === "pass");
+    expect(passEdge).toBeDefined();
+    expect(passEdge!.to_action).toBe("task-b.eval");
+
+    // task-b.eval → task-b.develop [fail] should exist (from edges config)
+    const evalEdges = db.getEdgesFrom("task-b.eval");
+    const failEdge = evalEdges.find((e) => e.condition === "fail");
+    expect(failEdge).toBeDefined();
+    expect(failEdge!.to_action).toBe("task-b.develop");
+  });
+
+  test("re-creates cross-task dependency edges (incoming)", () => {
+    expandConfig(reimportConfig, db);
+    reimportTasks(reimportConfig, db, ["task-b"]);
+
+    // task-a.eval → task-b.develop [pass] should exist (task-b depends_on task-a)
+    const aEvalEdges = db.getEdgesFrom("task-a.eval");
+    const crossEdge = aEvalEdges.find(
+      (e) => e.to_action === "task-b.develop" && e.condition === "pass",
+    );
+    expect(crossEdge).toBeDefined();
+  });
+
+  test("re-creates cross-task dependency edges (outgoing)", () => {
+    expandConfig(reimportConfig, db);
+    reimportTasks(reimportConfig, db, ["task-b"]);
+
+    // task-b.eval → task-c.develop [pass] should exist (task-c depends_on task-b)
+    const bEvalEdges = db.getEdgesFrom("task-b.eval");
+    const crossEdge = bEvalEdges.find(
+      (e) => e.to_action === "task-c.develop" && e.condition === "pass",
+    );
+    expect(crossEdge).toBeDefined();
+  });
+
+  test("picks up template changes", () => {
+    expandConfig(reimportConfig, db);
+
+    // Original: task-c has qa action
+    expect(db.getAction("task-c.qa")).not.toBeNull();
+
+    // Check original qa fail edge goes to develop (from explicit edges config)
+    const qaEdges = db.getEdgesFrom("task-c.qa");
+    const qaFail = qaEdges.find((e) => e.condition === "fail");
+    expect(qaFail!.to_action).toBe("task-c.develop");
+
+    // Re-import with modified config where qa edges change
+    const modified = reimportConfig.replace(
+      "edges: { fail: develop }",
+      "edges: { fail: develop }",
+    );
+    reimportTasks(modified, db, ["task-c"]);
+
+    // Actions still exist
+    expect(db.getAction("task-c.qa")).not.toBeNull();
+    // Fail edge still points to develop
+    const newQaEdges = db.getEdgesFrom("task-c.qa");
+    const newFail = newQaEdges.find((e) => e.condition === "fail");
+    expect(newFail!.to_action).toBe("task-c.develop");
+  });
+
+  test("handles re-import of task with no dependencies", () => {
+    expandConfig(reimportConfig, db);
+    reimportTasks(reimportConfig, db, ["task-a"]);
+
+    // task-a.develop should be pending (first action, no depends_on)
+    expect(db.getAction("task-a.develop")!.status).toBe("pending");
+
+    // Cross-task edge to task-b still exists
+    const aEvalEdges = db.getEdgesFrom("task-a.eval");
+    expect(aEvalEdges.find((e) => e.to_action === "task-b.develop")).toBeDefined();
+  });
+
+  test("handles re-import of multiple tasks at once", () => {
+    expandConfig(reimportConfig, db);
+
+    // Mark some as completed
+    db.updateAction("task-a.develop", { status: "completed" });
+    db.updateAction("task-b.develop", { status: "completed" });
+
+    // Re-import both a and b
+    const result = reimportTasks(reimportConfig, db, ["task-a", "task-b"]);
+    expect(result.replaced).toEqual(["task-a", "task-b"]);
+    expect(result.actions.length).toBe(4); // 2 actions each
+
+    // Both reset
+    expect(db.getAction("task-a.develop")!.status).toBe("pending");
+    expect(db.getAction("task-b.develop")!.status).toBe("inactive");
+
+    // Cross-task edge a → b preserved
+    const aEdges = db.getEdgesFrom("task-a.eval");
+    expect(aEdges.find((e) => e.to_action === "task-b.develop")).toBeDefined();
+  });
+
+  test("throws for unknown task ID", () => {
+    expandConfig(reimportConfig, db);
+    expect(() => reimportTasks(reimportConfig, db, ["nonexistent"])).toThrow(/not found in config/);
+  });
+
+  test("clears history for re-imported actions", () => {
+    expandConfig(reimportConfig, db);
+
+    // Add some history
+    db.appendHistory("task-b.develop", "completed", { condition: "pass" });
+    expect(db.getHistory("task-b.develop").length).toBe(1);
+
+    // Re-import task-b
+    reimportTasks(reimportConfig, db, ["task-b"]);
+
+    // History should be cleared (action was deleted and re-created)
+    expect(db.getHistory("task-b.develop").length).toBe(0);
+  });
+
+  test("does not null out other actions' project_id", () => {
+    expandConfig(reimportConfig, db);
+
+    // Verify project_id is set
+    expect(db.getAction("task-a.develop")!.project_id).toBe("reimport-test");
+    expect(db.getAction("task-c.develop")!.project_id).toBe("reimport-test");
+
+    // Re-import only task-b
+    reimportTasks(reimportConfig, db, ["task-b"]);
+
+    // Other actions' project_id should still be set
+    expect(db.getAction("task-a.develop")!.project_id).toBe("reimport-test");
+    expect(db.getAction("task-c.develop")!.project_id).toBe("reimport-test");
+    // Re-imported action should also have project_id
+    expect(db.getAction("task-b.develop")!.project_id).toBe("reimport-test");
   });
 });

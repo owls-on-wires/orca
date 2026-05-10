@@ -390,4 +390,66 @@ describe("v2 server", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
+
+  // ── GET /actions/:id/logs ──
+
+  it("GET /actions/:id/logs returns 404 for missing action", async () => {
+    const { status, body } = await fetchJson("/actions/nonexistent/logs");
+    expect(status).toBe(404);
+  });
+
+  it("GET /actions/:id/logs returns empty array when no logs exist", async () => {
+    await post("/import", { yaml: YAML_CONFIG });
+    const { status, body } = await fetchJson("/actions/task1.develop/logs");
+    expect(status).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  // ── POST /reimport ──
+
+  it("POST /reimport replaces specified tasks", async () => {
+    await post("/import", { yaml: YAML_CONFIG });
+
+    // Mark task1.develop as completed
+    await patch("/actions/task1.develop", { status: "completed" });
+
+    // Reimport task1 only
+    const { status, body } = await post("/reimport", {
+      yaml: YAML_CONFIG,
+      tasks: ["task1"],
+    });
+    expect(status).toBe(200);
+    expect(body.replaced).toEqual(["task1"]);
+    expect(body.actions).toContain("task1.develop");
+    expect(body.actions).toContain("task1.eval");
+
+    // task1.develop should be reset to pending (first action, no deps)
+    const { body: action } = await fetchJson("/actions/task1.develop");
+    expect(action.action.status).toBe("pending");
+  });
+
+  it("POST /reimport preserves other tasks", async () => {
+    await post("/import", { yaml: YAML_CONFIG });
+    await patch("/actions/task2.develop", { status: "completed" });
+
+    await post("/reimport", { yaml: YAML_CONFIG, tasks: ["task1"] });
+
+    // task2 should be untouched
+    const { body: action } = await fetchJson("/actions/task2.develop");
+    expect(action.action.status).toBe("completed");
+  });
+
+  it("POST /reimport returns 400 for unknown task", async () => {
+    await post("/import", { yaml: YAML_CONFIG });
+    const { status, body } = await post("/reimport", {
+      yaml: YAML_CONFIG,
+      tasks: ["nonexistent"],
+    });
+    expect(status).toBe(400);
+  });
+
+  it("POST /reimport returns 400 without tasks array", async () => {
+    const { status } = await post("/reimport", { yaml: YAML_CONFIG });
+    expect(status).toBe(400);
+  });
 });

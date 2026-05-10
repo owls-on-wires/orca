@@ -11,7 +11,8 @@ export const connectSSE = () => {
 
   const SSE_EVENTS = [
     'action_started', 'action_completed', 'action_waiting',
-    'edge_traversed', 'executor_state', 'connected', 'stats'
+    'edge_traversed', 'executor_state', 'connected', 'stats',
+    'tool_use'
   ];
 
   SSE_EVENTS.forEach(name => {

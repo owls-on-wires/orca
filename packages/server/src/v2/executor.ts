@@ -34,6 +34,7 @@ export interface ExecutorOptions {
   onActionEnd?: (action: ActionConfig, result: ActionResult) => void;
   onActionWaiting?: (action: ActionConfig) => void;
   onEdgeTraversed?: (from: string, to: string, condition: string) => void;
+  onToolUse?: (action: ActionConfig, toolName: string, toolInput: Record<string, unknown>) => void;
   onIdle?: () => void;
 }
 
@@ -150,6 +151,9 @@ export class Executor {
         scope: project?.scope as any ?? this.options.scope,
         nix: project?.nix ?? undefined,
         logPath,
+        onToolUse: this.options.onToolUse
+          ? (name, input) => this.options.onToolUse!(runningAction, name, input)
+          : undefined,
       };
 
       const result = await this.runActionFn(runningAction, predecessorOutputs, runOptions);

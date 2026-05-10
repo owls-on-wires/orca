@@ -3,6 +3,7 @@ import $ from 'jquery';
 import { get } from '../state/state';
 import * as modifiers from '../state/modifiers';
 import { renderGraph, getDemoFixture, type ApiAction, type ApiEdge } from './graph';
+import { renderDetail } from './detail';
 import { api } from '../services/api';
 
 function text(s: string): Node {
@@ -203,6 +204,7 @@ export const initGraph = async () => {
       onSelect: (id) => {
         graphSelected = graphSelected === id ? null : id;
         draw();
+        renderDetail(graphSelected);
       },
       onHover: (id) => {
         graphHover = id;

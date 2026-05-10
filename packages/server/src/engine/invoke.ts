@@ -254,9 +254,15 @@ export async function* invoke(
 // Simple invoke (consumes the stream, returns result)
 // ---------------------------------------------------------------------------
 
-export async function invokeSimple(options: InvokeOptions): Promise<InvokeResult> {
+export async function invokeSimple(
+  options: InvokeOptions,
+  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void,
+): Promise<InvokeResult> {
   let result: InvokeResult | null = null;
   for await (const event of invoke(options)) {
+    if (event.type === "tool_use" && onToolUse && event.toolName) {
+      onToolUse(event.toolName, event.toolInput ?? {});
+    }
     if (event.type === "result" && event.result) {
       result = event.result;
     }

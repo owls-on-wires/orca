@@ -4,7 +4,7 @@
  */
 
 import { OrcaDatabase } from "./db";
-import { expandConfig } from "./config";
+import { expandConfig, reimportTasks } from "./config";
 import { Executor, type ExecutorOptions } from "./executor";
 import { runAction } from "./action-runner";
 import type {
@@ -216,6 +216,47 @@ async function handleImport(
   return json({ actions: actionIds, edges: edgeCount });
 }
 
+// POST /reimport
+async function handleReimport(
+  req: Request,
+  state: ServerState,
+): Promise<Response> {
+  const body = (await parseBody(req)) as Record<string, unknown> | null;
+  if (!body) return jsonError("Invalid JSON body");
+
+  const taskIds = body.tasks as string[] | undefined;
+  if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+    return jsonError("Body must include 'tasks' array of task IDs to re-import");
+  }
+
+  let yamlString: string | undefined;
+  let sourceDir: string | undefined;
+
+  if (typeof body.dir === "string") {
+    const { readFileSync, existsSync } = await import("fs");
+    const { resolve, join } = await import("path");
+    const dir = resolve(body.dir as string);
+    const specName = (body.spec_path as string) || "project.orca.yaml";
+    const specPath = join(dir, specName);
+    if (!existsSync(specPath)) return jsonError(`Config not found: ${specPath}`);
+    yamlString = readFileSync(specPath, "utf8");
+    sourceDir = dir;
+  } else if (typeof body.yaml === "string") {
+    yamlString = body.yaml;
+    sourceDir = typeof body.source_dir === "string" ? body.source_dir : undefined;
+  }
+
+  if (!yamlString) return jsonError("Body must include 'dir' or 'yaml' alongside 'tasks'");
+
+  try {
+    const result = reimportTasks(yamlString, state.db, taskIds, sourceDir);
+    return json(result);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return jsonError(msg);
+  }
+}
+
 async function resolveTemplate(
   projectId: string,
   templateName: string,
@@ -295,6 +336,30 @@ function handleGetAction(
     edges: { from: edgesFrom, to: edgesTo },
     history,
   });
+}
+
+// GET /actions/:id/logs
+function handleGetLogs(
+  _req: Request,
+  state: ServerState,
+  params: Record<string, string>,
+): Response {
+  const action = state.db.getAction(params.id);
+  if (!action) return jsonError("Action not found", 404);
+
+  const project = action.project_id ? state.db.getProject(action.project_id) : null;
+  const projectDir = project?.project_dir ?? ".";
+  const logPath = `${projectDir}/.orca/logs/${params.id}.jsonl`;
+
+  try {
+    const { readFileSync, existsSync } = require("fs") as typeof import("fs");
+    if (!existsSync(logPath)) return json([]);
+    const content = readFileSync(logPath, "utf8");
+    const entries = content.trim().split("\n").filter(Boolean).map((line: string) => JSON.parse(line));
+    return json(entries);
+  } catch {
+    return json([]);
+  }
 }
 
 // PATCH /actions/:id
@@ -635,9 +700,11 @@ function handleActionSSE(
 
 const routes: Route[] = [
   defineRoute("POST", "/import", handleImport),
+  defineRoute("POST", "/reimport", handleReimport),
   defineRoute("GET", "/events", handleSSE),
   defineRoute("GET", "/actions", handleListActions),
   defineRoute("PATCH", "/actions", handleBulkUpdate),
+  defineRoute("GET", "/actions/:id/logs", handleGetLogs),
   defineRoute("GET", "/actions/:id/events", handleActionSSE),
   defineRoute("GET", "/actions/:id", handleGetAction),
   defineRoute("PATCH", "/actions/:id", handleUpdateAction),
@@ -717,6 +784,13 @@ export function startServer(options: ServerOptions = {}) {
       },
       onActionWaiting: (action) => {
         broadcast(state, "action_waiting", { action_id: action.id }, action.id);
+      },
+      onToolUse: (action, toolName, toolInput) => {
+        broadcast(state, "tool_use", {
+          action_id: action.id,
+          tool_name: toolName,
+          tool_input: toolInput,
+        }, action.id);
       },
       onEdgeTraversed: (from, to, condition) => {
         broadcast(state, "edge_traversed", { from, to, condition });
