@@ -136,6 +136,13 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
         Object.assign(params, task.overrides[actionType]);
       }
 
+      // Validate: agent actions must have a prompt from somewhere
+      if (typeDef.type === "agent" && !params.prompt) {
+        throw new Error(
+          `Agent action "${actionId}" has no prompt. Set prompt on the task, in the template type's params, or via overrides.`,
+        );
+      }
+
       // Auto-generate tags
       const tags = [
         `type:${actionType}`,
@@ -256,6 +263,140 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
 }
 
 /**
+ * Expand a single task into actions + edges without touching the database.
+ * Used by POST /groups to create task chains from templates at runtime.
+ *
+ * @param task — task definition (id, template, prompt, overrides, tags, budget)
+ * @param templates — template definitions (from project.orca.yaml)
+ * @param globalDefaults — global type defaults (from config.defaults.types)
+ * @param projectName — project ID for tags and project_id on actions
+ */
+export function expandTask(
+  task: V2TaskConfig,
+  templates: Record<string, { types: Record<string, ActionTypeDefaults>; actions?: string[] }>,
+  globalDefaults: Record<string, ActionTypeDefaults>,
+  projectName: string,
+): { actions: ActionConfig[]; edges: EdgeConfig[] } {
+  // Resolve type defaults: template types > global defaults
+  function getTypeDefaults(): Record<string, ActionTypeDefaults> {
+    if (task.template && templates[task.template]) {
+      return { ...globalDefaults, ...templates[task.template].types };
+    }
+    return globalDefaults;
+  }
+
+  // Resolve actions list: explicit > template default
+  function getActions(): string[] {
+    if (task.actions && task.actions.length > 0) return task.actions;
+    if (task.template && templates[task.template]?.actions) {
+      return templates[task.template].actions!;
+    }
+    throw new Error(`Task "${task.id}" has no actions and no template with default actions`);
+  }
+
+  const typeDefaults = getTypeDefaults();
+  const actionList = getActions();
+
+  // Validate action types exist
+  for (const actionType of actionList) {
+    if (!typeDefaults[actionType]) {
+      throw new Error(`Unknown action type "${actionType}" in task "${task.id}"`);
+    }
+  }
+
+  const actions: ActionConfig[] = [];
+  const edges: EdgeConfig[] = [];
+
+  // Stub taskActions map for resolveTarget (only this task)
+  const taskActions: Map<string, ActionConfig[]> = new Map();
+  const stubConfig = { name: projectName, tasks: [task], templates } as OrcaV2Config;
+
+  // Phase 1: Create actions
+  for (let i = 0; i < actionList.length; i++) {
+    const actionType = actionList[i];
+    const typeDef = typeDefaults[actionType];
+    const actionId = `${task.id}.${actionType}`;
+
+    // All actions start inactive — caller activates via `after` or PATCH
+    const status = "inactive";
+
+    const reservedKeys = new Set(["type", "params", "edges"]);
+    const topLevelParams: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(typeDef)) {
+      if (!reservedKeys.has(k)) topLevelParams[k] = v;
+    }
+    const params: Record<string, unknown> = {
+      ...topLevelParams,
+      ...(typeDef.params ?? {}),
+    };
+
+    if (typeDef.type === "agent" && task.prompt) {
+      params.prompt = task.prompt;
+    }
+
+    if (task.budget) {
+      if (task.budget.max_iterations !== undefined) params.max_iterations = task.budget.max_iterations;
+      if (task.budget.max_cost !== undefined) params.max_cost = task.budget.max_cost;
+    }
+
+    if (task.overrides?.[actionType]) {
+      Object.assign(params, task.overrides[actionType]);
+    }
+
+    // Validate: agent actions must have a prompt from somewhere
+    if (typeDef.type === "agent" && !params.prompt) {
+      throw new Error(
+        `Agent action "${actionId}" has no prompt. Set prompt on the task, in the template type's params, or via overrides.`,
+      );
+    }
+
+    const tags = [
+      `type:${actionType}`,
+      `task:${task.id}`,
+      `project:${projectName}`,
+      ...(task.tags ?? []),
+    ];
+
+    const action = createAction({
+      id: actionId,
+      type: typeDef.type,
+      status,
+      project_id: projectName,
+      params,
+      tags,
+    });
+
+    actions.push(action);
+  }
+
+  taskActions.set(task.id, actions);
+
+  // Phase 2: Generate edges
+  for (let i = 0; i < actionList.length; i++) {
+    const actionType = actionList[i];
+    const typeDef = typeDefaults[actionType];
+    const actionId = `${task.id}.${actionType}`;
+
+    const defaultEdges: Record<string, string> = {
+      pass: "next", fail: "first", max_turns: "first",
+      timeout: "first", cost_exceeded: "first", stuck: "first", error: "first",
+    };
+    const edgesMap: Partial<Record<EdgeCondition, string>> = {
+      ...defaultEdges,
+      ...(typeDef.edges ?? {}),
+    };
+
+    for (const [condition, target] of Object.entries(edgesMap)) {
+      const resolved = resolveTarget(target, task.id, actionList, i, typeDefaults, taskActions, stubConfig, task);
+      if (resolved === null || resolved === actionId) continue;
+      edges.push(createEdge(actionId, resolved, condition as EdgeCondition));
+    }
+  }
+
+  return { actions, edges };
+}
+
+/**
  * Re-import specific tasks from a config, replacing their actions and edges
  * while preserving all other tasks' state. This is a partial re-import.
  *
@@ -363,6 +504,12 @@ export function reimportTasks(
       }
       if (task.overrides?.[actionType]) {
         Object.assign(params, task.overrides[actionType]);
+      }
+
+      if (typeDef.type === "agent" && !params.prompt) {
+        throw new Error(
+          `Agent action "${actionId}" has no prompt. Set prompt on the task, in the template type's params, or via overrides.`,
+        );
       }
 
       const tags = [

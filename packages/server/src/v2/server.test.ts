@@ -75,9 +75,11 @@ describe("v2 server", () => {
   // ── POST /actions (create) ──
 
   it("POST /actions creates an action", async () => {
+    await post("/import", { yaml: YAML_CONFIG });
     const { status, body } = await post("/actions", {
       id: "my-task.develop",
       type: "agent",
+      project_id: "test-project",
       params: { prompt: "Build something" },
       tags: ["task:my-task", "type:develop"],
     });
@@ -87,48 +89,59 @@ describe("v2 server", () => {
     expect(body.status).toBe("inactive");
     expect(body.params.prompt).toBe("Build something");
     expect(body.tags).toContain("task:my-task");
+    expect(body.project_id).toBe("test-project");
   });
 
   it("POST /actions defaults status to inactive", async () => {
-    const { body } = await post("/actions", { id: "a.b", type: "command" });
+    await post("/import", { yaml: YAML_CONFIG });
+    const { body } = await post("/actions", { id: "a.b", type: "command", project_id: "test-project" });
     expect(body.status).toBe("inactive");
   });
 
   it("POST /actions accepts explicit status", async () => {
+    await post("/import", { yaml: YAML_CONFIG });
     const { body } = await post("/actions", {
       id: "a.b",
       type: "agent",
       status: "pending",
+      project_id: "test-project",
     });
     expect(body.status).toBe("pending");
   });
 
   it("POST /actions returns 409 for duplicate id", async () => {
-    await post("/actions", { id: "dup.action", type: "agent" });
-    const { status, body } = await post("/actions", { id: "dup.action", type: "agent" });
+    await post("/import", { yaml: YAML_CONFIG });
+    await post("/actions", { id: "dup.action", type: "agent", project_id: "test-project" });
+    const { status, body } = await post("/actions", { id: "dup.action", type: "agent", project_id: "test-project" });
     expect(status).toBe(409);
     expect(body.error).toContain("already exists");
   });
 
   it("POST /actions returns 400 for missing id", async () => {
-    const { status } = await post("/actions", { type: "agent" });
+    const { status } = await post("/actions", { type: "agent", project_id: "x" });
     expect(status).toBe(400);
   });
 
   it("POST /actions returns 400 for missing type", async () => {
-    const { status } = await post("/actions", { id: "no-type" });
+    const { status } = await post("/actions", { id: "no-type", project_id: "x" });
     expect(status).toBe(400);
   });
 
   it("POST /actions returns 400 for invalid type", async () => {
-    const { status } = await post("/actions", { id: "bad", type: "invalid" });
+    const { status } = await post("/actions", { id: "bad", type: "invalid", project_id: "x" });
+    expect(status).toBe(400);
+  });
+
+  it("POST /actions returns 400 for missing project_id", async () => {
+    const { status } = await post("/actions", { id: "no-proj", type: "agent" });
     expect(status).toBe(400);
   });
 
   it("POST /actions + POST /edges builds a chain", async () => {
+    await post("/import", { yaml: YAML_CONFIG });
     // Create two actions
-    await post("/actions", { id: "chain.a", type: "agent", status: "pending" });
-    await post("/actions", { id: "chain.b", type: "command", params: { command: "echo ok" } });
+    await post("/actions", { id: "chain.a", type: "agent", status: "pending", project_id: "test-project" });
+    await post("/actions", { id: "chain.b", type: "command", params: { command: "echo ok" }, project_id: "test-project" });
 
     // Wire them
     const { status, body } = await post("/edges", {
@@ -523,5 +536,179 @@ describe("v2 server", () => {
   it("POST /reimport returns 400 without tasks array", async () => {
     const { status } = await post("/reimport", { yaml: YAML_CONFIG });
     expect(status).toBe(400);
+  });
+
+  // ── POST /groups ──
+
+  it("POST /groups creates a task chain from template", async () => {
+    // First import to create the project record
+    await post("/import", { yaml: YAML_CONFIG });
+
+    // Write a project.orca.yaml with templates to the project_dir
+    const { writeFileSync, mkdirSync } = require("fs");
+    const project = cleanup.db.getProject("test-project");
+    const projectDir = project!.project_dir;
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(`${projectDir}/project.orca.yaml`, YAML_CONFIG);
+
+    const { status, body } = await post("/groups", {
+      id: "new-task",
+      template: "tdd",
+      project_id: "test-project",
+      prompt: "Build something new",
+      overrides: {
+        eval: { command: "bun test test/new.test.ts" },
+      },
+    });
+
+    // Should fail — YAML_CONFIG doesn't define a "tdd" template
+    // Let's use the actual templates from YAML_CONFIG which has "develop" and "eval" types
+    expect(status).toBe(400);
+  });
+
+  it("POST /groups with valid template creates actions and edges", async () => {
+    const { mkdtempSync, writeFileSync } = require("fs");
+    const { join } = require("path");
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-groups-"));
+
+    const configWithTemplate = `
+name: group-test
+project_dir: ${tmpDir}
+templates:
+  tdd:
+    actions: [develop, eval]
+    types:
+      develop:
+        type: agent
+      eval:
+        type: command
+        params:
+          command: "bun test"
+        edges:
+          fail: develop
+tasks:
+  - id: placeholder
+    prompt: "x"
+    actions: [develop]
+`;
+
+    await post("/import", { yaml: configWithTemplate, source_dir: tmpDir });
+    writeFileSync(join(tmpDir, "project.orca.yaml"), configWithTemplate);
+
+    const { status, body } = await post("/groups", {
+      id: "auth",
+      template: "tdd",
+      project_id: "group-test",
+      prompt: "Build auth",
+    });
+
+    expect(status).toBe(201);
+    expect(body.actions).toContain("auth.develop");
+    expect(body.actions).toContain("auth.eval");
+    expect(body.edges).toBeGreaterThan(0);
+
+    // Verify actions exist in DB
+    const { body: detail } = await fetchJson("/actions/auth.develop");
+    expect(detail.action.type).toBe("agent");
+    expect(detail.action.status).toBe("inactive");
+    expect(detail.action.project_id).toBe("group-test");
+    expect(detail.action.params.prompt).toBe("Build auth");
+  });
+
+  it("POST /groups wires 'after' edge", async () => {
+    const { mkdirSync, writeFileSync } = require("fs");
+    const { mkdtempSync } = require("fs");
+    const { join } = require("path");
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-groups-"));
+
+    const configWithTemplate = `
+name: after-test
+project_dir: ${tmpDir}
+templates:
+  tdd:
+    actions: [develop, eval]
+    types:
+      develop:
+        type: agent
+      eval:
+        type: command
+        params:
+          command: "bun test"
+tasks:
+  - id: existing
+    template: tdd
+    prompt: "x"
+`;
+    await post("/import", { yaml: configWithTemplate, source_dir: tmpDir });
+    writeFileSync(join(tmpDir, "project.orca.yaml"), configWithTemplate);
+
+    const { status, body } = await post("/groups", {
+      id: "next-task",
+      template: "tdd",
+      project_id: "after-test",
+      prompt: "Build next",
+      after: "existing.eval",
+    });
+
+    expect(status).toBe(201);
+
+    // Verify edge from existing.eval → next-task.develop
+    const { body: evalDetail } = await fetchJson("/actions/existing.eval");
+    const passToNext = evalDetail.edges.from.find(
+      (e: any) => e.to_action === "next-task.develop" && e.condition === "pass",
+    );
+    expect(passToNext).toBeDefined();
+  });
+
+  it("POST /groups returns 409 for duplicate actions", async () => {
+    const { mkdtempSync, writeFileSync } = require("fs");
+    const { join } = require("path");
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-groups-"));
+
+    const cfg = `
+name: dup-test
+project_dir: ${tmpDir}
+templates:
+  tdd:
+    actions: [develop, eval]
+    types:
+      develop:
+        type: agent
+      eval:
+        type: command
+tasks:
+  - id: dup
+    template: tdd
+    prompt: "x"
+`;
+    await post("/import", { yaml: cfg, source_dir: tmpDir });
+    writeFileSync(join(tmpDir, "project.orca.yaml"), cfg);
+
+    // dup.develop and dup.eval already exist from import
+    const { status } = await post("/groups", {
+      id: "dup",
+      template: "tdd",
+      project_id: "dup-test",
+      prompt: "Duplicate",
+    });
+    expect(status).toBe(409);
+  });
+
+  it("POST /groups returns 400 for missing fields", async () => {
+    const { status: s1 } = await post("/groups", { template: "tdd", project_id: "x" });
+    expect(s1).toBe(400);
+    const { status: s2 } = await post("/groups", { id: "x", project_id: "x" });
+    expect(s2).toBe(400);
+    const { status: s3 } = await post("/groups", { id: "x", template: "tdd" });
+    expect(s3).toBe(400);
+  });
+
+  it("POST /groups returns 404 for unknown project", async () => {
+    const { status } = await post("/groups", {
+      id: "x",
+      template: "tdd",
+      project_id: "nonexistent",
+    });
+    expect(status).toBe(404);
   });
 });

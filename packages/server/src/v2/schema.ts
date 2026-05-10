@@ -86,7 +86,7 @@ export interface OrcaV2Config {
 
 export interface V2TaskConfig {
   id: string;
-  prompt: string;
+  prompt?: string;
   actions?: string[];
   template?: string;
   overrides?: Record<string, Record<string, unknown>>;

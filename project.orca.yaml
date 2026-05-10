@@ -1,0 +1,22 @@
+
+name: test-project
+defaults:
+  types:
+    develop:
+      type: agent
+      params:
+        prompt_template: "Implement the feature"
+    eval:
+      type: command
+      params:
+        command: "bun test"
+tasks:
+  - id: task1
+    prompt: "Build feature X"
+    actions: [develop, eval]
+    tags: [frontend]
+  - id: task2
+    prompt: "Build feature Y"
+    actions: [develop]
+    tags: [backend]
+    depends_on: [task1]

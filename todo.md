@@ -2,7 +2,7 @@
 
 ## UI
 
-- [ ] Graph doesn't re-render when new action chains are added dynamically (can't scroll to see them)
+- [ ] Graph container doesn't re-render when new action chains are added dynamically (can't scroll to see them); the graph updates but the scale/view container does not
 - [ ] Sidebar should auto-follow the currently executing action (unless user has manually selected a different one)
 - [ ] Sidebar: don't show detail for StructuredOutput tool calls (output is already displayed in the Output section)
 - [ ] Sidebar: Params section should be auto-expanded and rendered as structured key/value (like Output), not raw JSON text. The `prompt` key should not display its value inline — instead show a "view prompt" link that opens a page-centered modal with the full prompt string, properly formatted.
@@ -14,9 +14,9 @@
 
 ## Server
 
-- [ ] `POST /groups` endpoint — create a full task chain from a template in one call. Accepts `{ id, template, prompt?, after?, depends_on?, overrides?, tags? }`. Expands the template into actions + edges server-side and wires a pass edge from `after` to the first action. Returns created action IDs.
-- [ ] Make `prompt` optional on tasks — update `V2TaskConfig.prompt` from `string` to `string | undefined`. If prompt is missing from both the task AND the template type's `params.prompt`, throw a validation error during config expansion. If the type defines `params.prompt` and the task omits it, the type-level prompt is used (no override).
-- [ ] Make `project_id` required on `POST /actions` — without it, the executor can't resolve project_dir, so logs go to the wrong place, scope enforcement uses wrong paths, and project-level config (model, nix, git) is lost. Return 400 if missing.
+- [x] `POST /groups` endpoint — create a full task chain from a template in one call. Accepts `{ id, template, project_id, prompt?, after?, depends_on?, overrides?, tags? }`. Reads templates from project.orca.yaml on disk. Expands template into actions + edges, wires `after`/`depends_on` edges. Returns created action IDs.
+- [x] Make `prompt` optional on tasks — `V2TaskConfig.prompt` is now `string | undefined`. If prompt is missing from both the task AND the template type's `params.prompt` AND overrides, throws validation error during expansion. Template-level prompts survive when task omits prompt.
+- [x] Make `project_id` required on `POST /actions` — returns 400 if missing.
 
 ## Executor
 

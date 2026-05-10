@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { OrcaDatabase } from "./db";
-import { expandConfig, reimportTasks } from "./config";
+import { expandConfig, reimportTasks, expandTask } from "./config";
+import type { ActionTypeDefaults, TemplateConfig, V2TaskConfig } from "./schema";
 
 let db: OrcaDatabase;
 
@@ -589,5 +590,200 @@ describe("reimportTasks", () => {
     expect(db.getAction("task-c.develop")!.project_id).toBe("reimport-test");
     // Re-imported action should also have project_id
     expect(db.getAction("task-b.develop")!.project_id).toBe("reimport-test");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expandTask
+// ---------------------------------------------------------------------------
+
+const tddTemplate: TemplateConfig = {
+  actions: ["write-tests", "develop", "eval"],
+  types: {
+    "write-tests": { type: "agent" },
+    develop: { type: "agent" },
+    eval: { type: "command", params: { command: "bun test" }, edges: { fail: "develop" } },
+  },
+};
+
+const devTemplate: TemplateConfig = {
+  actions: ["develop", "eval"],
+  types: {
+    develop: { type: "agent" },
+    eval: { type: "command", params: { command: "bun test" }, edges: { fail: "develop" } },
+  },
+};
+
+describe("expandTask", () => {
+  test("expands tdd template into 3 actions", () => {
+    const task: V2TaskConfig = { id: "auth", prompt: "Build auth", template: "tdd" };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "my-project");
+
+    expect(result.actions).toHaveLength(3);
+    expect(result.actions.map((a) => a.id)).toEqual([
+      "auth.write-tests",
+      "auth.develop",
+      "auth.eval",
+    ]);
+  });
+
+  test("all actions start inactive", () => {
+    const task: V2TaskConfig = { id: "auth", prompt: "Build auth", template: "tdd" };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "proj");
+
+    for (const a of result.actions) {
+      expect(a.status).toBe("inactive");
+    }
+  });
+
+  test("sets project_id on all actions", () => {
+    const task: V2TaskConfig = { id: "auth", prompt: "Build auth", template: "tdd" };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "my-proj");
+
+    for (const a of result.actions) {
+      expect(a.project_id).toBe("my-proj");
+    }
+  });
+
+  test("generates correct intra-task edges", () => {
+    const task: V2TaskConfig = { id: "auth", prompt: "Build auth", template: "tdd" };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "proj");
+
+    // pass chain: write-tests → develop → eval
+    const passEdges = result.edges.filter((e) => e.condition === "pass");
+    expect(passEdges.find((e) => e.from_action === "auth.write-tests")?.to_action).toBe("auth.develop");
+    expect(passEdges.find((e) => e.from_action === "auth.develop")?.to_action).toBe("auth.eval");
+
+    // fail edge: eval → develop
+    const failEdge = result.edges.find((e) => e.from_action === "auth.eval" && e.condition === "fail");
+    expect(failEdge?.to_action).toBe("auth.develop");
+  });
+
+  test("injects task prompt into agent actions", () => {
+    const task: V2TaskConfig = { id: "auth", prompt: "Build auth system", template: "tdd" };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "proj");
+
+    const writeTests = result.actions.find((a) => a.id === "auth.write-tests")!;
+    expect(writeTests.params.prompt).toBe("Build auth system");
+
+    const develop = result.actions.find((a) => a.id === "auth.develop")!;
+    expect(develop.params.prompt).toBe("Build auth system");
+
+    // eval is command — no prompt
+    const eval_ = result.actions.find((a) => a.id === "auth.eval")!;
+    expect(eval_.params.command).toBe("bun test");
+  });
+
+  test("applies overrides per action type", () => {
+    const task: V2TaskConfig = {
+      id: "auth",
+      prompt: "Build auth",
+      template: "tdd",
+      overrides: {
+        "write-tests": { prompt: "Write auth tests" },
+        eval: { command: "bun test test/auth.test.ts" },
+      },
+    };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "proj");
+
+    expect(result.actions.find((a) => a.id === "auth.write-tests")!.params.prompt).toBe("Write auth tests");
+    expect(result.actions.find((a) => a.id === "auth.eval")!.params.command).toBe("bun test test/auth.test.ts");
+  });
+
+  test("generates auto-tags", () => {
+    const task: V2TaskConfig = { id: "auth", prompt: "x", template: "tdd", tags: ["epic:1"] };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "proj");
+
+    const wt = result.actions.find((a) => a.id === "auth.write-tests")!;
+    expect(wt.tags).toContain("type:write-tests");
+    expect(wt.tags).toContain("task:auth");
+    expect(wt.tags).toContain("project:proj");
+    expect(wt.tags).toContain("epic:1");
+  });
+
+  test("dev template expands to 2 actions", () => {
+    const task: V2TaskConfig = { id: "setup", prompt: "Setup", template: "dev" };
+    const result = expandTask(task, { dev: devTemplate }, {}, "proj");
+
+    expect(result.actions).toHaveLength(2);
+    expect(result.actions.map((a) => a.id)).toEqual(["setup.develop", "setup.eval"]);
+  });
+
+  test("skips self-loop edges", () => {
+    const task: V2TaskConfig = { id: "solo", prompt: "x", template: "dev" };
+    const result = expandTask(task, { dev: devTemplate }, {}, "proj");
+
+    // develop is first action — default fail→first = develop (self-loop), should be skipped
+    const devSelfLoops = result.edges.filter(
+      (e) => e.from_action === "solo.develop" && e.to_action === "solo.develop",
+    );
+    expect(devSelfLoops).toHaveLength(0);
+  });
+
+  test("throws for unknown template", () => {
+    const task: V2TaskConfig = { id: "x", prompt: "x", template: "nonexistent" };
+    expect(() => expandTask(task, {}, {}, "proj")).toThrow(/no actions/);
+  });
+
+  test("merges budget into params", () => {
+    const task: V2TaskConfig = {
+      id: "auth",
+      prompt: "x",
+      template: "tdd",
+      budget: { max_iterations: 5, max_cost: 2.0 },
+    };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "proj");
+
+    const dev = result.actions.find((a) => a.id === "auth.develop")!;
+    expect(dev.params.max_iterations).toBe(5);
+    expect(dev.params.max_cost).toBe(2.0);
+  });
+
+  test("uses template params.prompt when task prompt is omitted", () => {
+    const templateWithPrompt: TemplateConfig = {
+      actions: ["develop", "eval"],
+      types: {
+        develop: { type: "agent", params: { prompt: "Default develop prompt" } },
+        eval: { type: "command", params: { command: "bun test" } },
+      },
+    };
+    const task: V2TaskConfig = { id: "auth", template: "tpl" };
+    const result = expandTask(task, { tpl: templateWithPrompt }, {}, "proj");
+
+    expect(result.actions.find((a) => a.id === "auth.develop")!.params.prompt).toBe("Default develop prompt");
+  });
+
+  test("task prompt overrides template params.prompt", () => {
+    const templateWithPrompt: TemplateConfig = {
+      actions: ["develop", "eval"],
+      types: {
+        develop: { type: "agent", params: { prompt: "Default prompt" } },
+        eval: { type: "command", params: { command: "bun test" } },
+      },
+    };
+    const task: V2TaskConfig = { id: "auth", prompt: "Task-level prompt", template: "tpl" };
+    const result = expandTask(task, { tpl: templateWithPrompt }, {}, "proj");
+
+    expect(result.actions.find((a) => a.id === "auth.develop")!.params.prompt).toBe("Task-level prompt");
+  });
+
+  test("throws when agent action has no prompt from any source", () => {
+    const task: V2TaskConfig = { id: "auth", template: "tdd" };
+    expect(() => expandTask(task, { tdd: tddTemplate }, {}, "proj")).toThrow(/no prompt/);
+  });
+
+  test("override prompt satisfies validation when task prompt is omitted", () => {
+    const task: V2TaskConfig = {
+      id: "auth",
+      template: "tdd",
+      overrides: {
+        "write-tests": { prompt: "Write tests" },
+        develop: { prompt: "Implement" },
+      },
+    };
+    const result = expandTask(task, { tdd: tddTemplate }, {}, "proj");
+
+    expect(result.actions.find((a) => a.id === "auth.write-tests")!.params.prompt).toBe("Write tests");
+    expect(result.actions.find((a) => a.id === "auth.develop")!.params.prompt).toBe("Implement");
   });
 });

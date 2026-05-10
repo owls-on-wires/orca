@@ -4,15 +4,17 @@
  */
 
 import { OrcaDatabase } from "./db";
-import { expandConfig, reimportTasks } from "./config";
+import { expandConfig, reimportTasks, expandTask } from "./config";
 import { Executor, type ExecutorOptions } from "./executor";
 import { runAction } from "./action-runner";
 import {
   createAction,
   type ActionConfig,
   type ActionStatus,
-  type EdgeCondition,
   type ActionTypeDefaults,
+  type EdgeCondition,
+  type OrcaV2Config,
+  type V2TaskConfig,
 } from "./schema";
 
 // ---------------------------------------------------------------------------
@@ -258,6 +260,119 @@ async function handleReimport(
   }
 }
 
+// POST /groups
+async function handleCreateGroup(
+  req: Request,
+  state: ServerState,
+): Promise<Response> {
+  const body = (await parseBody(req)) as Record<string, unknown> | null;
+  if (!body) return jsonError("Invalid JSON body");
+
+  const id = body.id as string | undefined;
+  const templateName = body.template as string | undefined;
+  const projectId = body.project_id as string | undefined;
+
+  if (!id || typeof id !== "string") return jsonError("Missing required field: id");
+  if (!templateName || typeof templateName !== "string") return jsonError("Missing required field: template");
+  if (!projectId || typeof projectId !== "string") return jsonError("Missing required field: project_id");
+
+  // Look up project to get project_dir
+  const project = state.db.getProject(projectId);
+  if (!project) return jsonError(`Project "${projectId}" not found`, 404);
+
+  // Read project.orca.yaml from project_dir to get templates
+  const { readFileSync, existsSync } = require("fs") as typeof import("fs");
+  const { join } = require("path") as typeof import("path");
+  const yamlMod = require("js-yaml") as typeof import("js-yaml");
+
+  const specPath = join(project.project_dir, "project.orca.yaml");
+  if (!existsSync(specPath)) return jsonError(`Config not found: ${specPath}`);
+
+  let config: OrcaV2Config;
+  try {
+    config = yamlMod.load(readFileSync(specPath, "utf8")) as OrcaV2Config;
+  } catch (e) {
+    return jsonError(`Failed to parse config: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  const templates = config.templates ?? {};
+  if (!templates[templateName]) {
+    return jsonError(`Template "${templateName}" not found. Available: ${Object.keys(templates).join(", ")}`);
+  }
+
+  // Check for duplicate actions
+  const template = templates[templateName];
+  const actionNames = template.actions ?? [];
+  for (const actionType of actionNames) {
+    const actionId = `${id}.${actionType}`;
+    if (state.db.getAction(actionId)) {
+      return jsonError(`Action "${actionId}" already exists`, 409);
+    }
+  }
+
+  // Build task config
+  const task: V2TaskConfig = {
+    id: id,
+    prompt: body.prompt as string | undefined ?? "",
+    template: templateName,
+    overrides: body.overrides as Record<string, Record<string, unknown>> | undefined,
+    tags: body.tags as string[] | undefined,
+    budget: body.budget as { max_iterations?: number; max_cost?: number } | undefined,
+  };
+
+  // Expand task into actions + edges
+  const globalDefaults = config.defaults?.types ?? {};
+  let expanded;
+  try {
+    expanded = expandTask(task, templates, globalDefaults, projectId);
+  } catch (e) {
+    return jsonError(e instanceof Error ? e.message : String(e));
+  }
+
+  // Insert actions
+  for (const action of expanded.actions) {
+    state.db.insertAction(action);
+  }
+
+  // Insert intra-task edges
+  for (const edge of expanded.edges) {
+    state.db.insertEdge(edge);
+  }
+
+  // Wire "after" — pass edge from predecessor to first action
+  const after = body.after as string | undefined;
+  if (after) {
+    const predecessor = state.db.getAction(after);
+    if (!predecessor) return jsonError(`"after" action "${after}" not found`, 404);
+    const firstAction = expanded.actions[0];
+    state.db.insertEdge({
+      from_action: after,
+      to_action: firstAction.id,
+      condition: "pass",
+    } as any);
+  }
+
+  // Wire "depends_on" — pass edges from each dependency's terminal action
+  const dependsOn = body.depends_on as string[] | undefined;
+  if (dependsOn) {
+    const firstAction = expanded.actions[0];
+    for (const depId of dependsOn) {
+      const dep = state.db.getAction(depId);
+      if (!dep) return jsonError(`"depends_on" action "${depId}" not found`, 404);
+      state.db.insertEdge({
+        from_action: depId,
+        to_action: firstAction.id,
+        condition: "pass",
+      } as any);
+    }
+  }
+
+  return json({
+    actions: expanded.actions.map((a) => a.id),
+    edges: expanded.edges.length + (after ? 1 : 0) + (dependsOn?.length ?? 0),
+  }, 201);
+}
+
 async function resolveTemplate(
   projectId: string,
   templateName: string,
@@ -329,9 +444,13 @@ async function handleCreateAction(
 
   const id = body.id as string | undefined;
   const type = body.type as string | undefined;
+  const projectId = body.project_id as string | undefined;
   if (!id || typeof id !== "string") return jsonError("Missing required field: id");
   if (!type || (type !== "agent" && type !== "command")) {
     return jsonError("Missing or invalid field: type (must be 'agent' or 'command')");
+  }
+  if (!projectId || typeof projectId !== "string") {
+    return jsonError("Missing required field: project_id");
   }
 
   // Check for duplicate
@@ -343,7 +462,7 @@ async function handleCreateAction(
     id,
     type: type as "agent" | "command",
     status: (body.status as ActionStatus) ?? "inactive",
-    project_id: (body.project_id as string) ?? null,
+    project_id: projectId,
     params: (body.params as Record<string, unknown>) ?? {},
     tags: (body.tags as string[]) ?? [],
   });
@@ -735,6 +854,7 @@ function handleActionSSE(
 const routes: Route[] = [
   defineRoute("POST", "/import", handleImport),
   defineRoute("POST", "/reimport", handleReimport),
+  defineRoute("POST", "/groups", handleCreateGroup),
   defineRoute("GET", "/events", handleSSE),
   defineRoute("POST", "/actions", handleCreateAction),
   defineRoute("GET", "/actions", handleListActions),
