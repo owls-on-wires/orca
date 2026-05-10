@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { OrcaDatabase } from "./db";
 import { Executor, type ExecutorOptions, type RunActionFn } from "./executor";
-import { createAction, createEdge, type ActionConfig } from "./schema";
+import { createAction, createEdge, createProject, type ActionConfig } from "./schema";
 import type { ActionResult, WaitingResult } from "./action-runner";
 
 // ---------------------------------------------------------------------------
@@ -311,5 +311,133 @@ describe("executor", () => {
     expect(callOrder).toEqual(["a"]);
     expect(db.getAction("b")!.status).toBe("inactive");
     expect(idleCalled).toBe(true);
+  });
+
+  // ── Supervisor fallback ──
+
+  test("unhandled failure escalates to supervisor action", async () => {
+    db.insertProject(createProject({ id: "p", project_dir: "/tmp" }));
+    db.insertAction(createAction({ id: "task.develop", status: "pending", project_id: "p", tags: ["project:p"] }));
+    db.insertAction(createAction({ id: "supervisor", status: "inactive", project_id: "p", tags: ["type:supervisor", "project:p"] }));
+
+    // Supervisor passes when it runs; original action fails
+    const run: RunActionFn = async (action) => {
+      if (action.tags.includes("type:supervisor")) return passResult();
+      return failResult();
+    };
+    const unhandled: string[] = [];
+    const executor = new Executor(db, makeOptions(run, {
+      onUnhandledFailure: (action, condition) => {
+        unhandled.push(`${action.id}:${condition}`);
+      },
+    }));
+    await executor.run();
+
+    // Supervisor ran and completed (was activated then executed)
+    expect(db.getAction("supervisor")!.status).toBe("completed");
+    expect(db.getAction("supervisor")!.params.failed_action).toBe("task.develop");
+    expect(db.getAction("supervisor")!.params.failed_condition).toBe("fail");
+    expect(unhandled).toContain("task.develop:fail");
+  });
+
+  test("supervisor gets failure output as context", async () => {
+    db.insertProject(createProject({ id: "p", project_dir: "/tmp" }));
+    db.insertAction(createAction({ id: "a", status: "pending", project_id: "p", tags: ["project:p"] }));
+    db.insertAction(createAction({
+      id: "sup", status: "inactive", project_id: "p",
+      tags: ["type:supervisor", "project:p"],
+      params: { prompt: "Fix things" },
+    }));
+
+    const run: RunActionFn = async (action) => {
+      if (action.tags.includes("type:supervisor")) return passResult();
+      return {
+        condition: "error" as const,
+        output: { status: "unknown", summary: "Something broke" },
+        cost_usd: 0.1, duration_ms: 100, num_turns: 1,
+      };
+    };
+
+    const executor = new Executor(db, makeOptions(run));
+    await executor.run();
+
+    // Supervisor ran — check the params that were set before it ran
+    const sup = db.getAction("sup")!;
+    expect(sup.status).toBe("completed");
+    expect(sup.params.failed_action).toBe("a");
+    expect(sup.params.failed_condition).toBe("error");
+    expect((sup.params.failed_output as any).summary).toBe("Something broke");
+    expect(sup.params.prompt).toBe("Fix things");
+  });
+
+  test("no supervisor: fires onUnhandledFailure callback only", async () => {
+    db.insertAction(createAction({ id: "orphan", status: "pending" }));
+
+    const run: RunActionFn = async () => ({
+      condition: "error" as const,
+      output: { status: "error", summary: "No edge" },
+      cost_usd: 0, duration_ms: 10, num_turns: 0,
+    });
+
+    const unhandled: string[] = [];
+    const executor = new Executor(db, makeOptions(run, {
+      onUnhandledFailure: (action, condition) => {
+        unhandled.push(`${action.id}:${condition}`);
+      },
+    }));
+    await executor.run();
+
+    expect(unhandled).toContain("orphan:error");
+    expect(db.getAction("orphan")!.status).toBe("failed");
+  });
+
+  test("pass condition with no edges does NOT escalate", async () => {
+    db.insertProject(createProject({ id: "p", project_dir: "/tmp" }));
+    db.insertAction(createAction({ id: "terminal", status: "pending", project_id: "p", tags: ["project:p"] }));
+    db.insertAction(createAction({ id: "sup", status: "inactive", project_id: "p", tags: ["type:supervisor", "project:p"] }));
+
+    const run: RunActionFn = async () => passResult();
+    const executor = new Executor(db, makeOptions(run));
+    await executor.run();
+
+    expect(db.getAction("sup")!.status).toBe("inactive");
+  });
+
+  test("supervisor can be re-activated on subsequent failures", async () => {
+    db.insertProject(createProject({ id: "p", project_dir: "/tmp" }));
+    db.insertAction(createAction({ id: "a", status: "pending", project_id: "p", tags: ["project:p"] }));
+    db.insertAction(createAction({ id: "b", status: "pending", project_id: "p", tags: ["project:p"] }));
+    db.insertAction(createAction({ id: "sup", status: "inactive", project_id: "p", tags: ["type:supervisor", "project:p"] }));
+
+    const supRuns: string[] = [];
+    const run: RunActionFn = async (action) => {
+      if (action.tags.includes("type:supervisor")) {
+        supRuns.push(action.params.failed_action as string);
+        return passResult();
+      }
+      return { condition: "error" as const, output: { status: "error", summary: "broke" }, cost_usd: 0, duration_ms: 10, num_turns: 0 };
+    };
+
+    const executor = new Executor(db, makeOptions(run));
+    await executor.run();
+
+    // Supervisor ran at least once
+    expect(supRuns.length).toBeGreaterThanOrEqual(1);
+    expect(db.getAction("sup")!.status).toBe("completed");
+  });
+
+  test("escalation records history entry", async () => {
+    db.insertProject(createProject({ id: "p", project_dir: "/tmp" }));
+    db.insertAction(createAction({ id: "x", status: "pending", project_id: "p", tags: ["project:p"] }));
+    db.insertAction(createAction({ id: "sup", status: "inactive", project_id: "p", tags: ["type:supervisor", "project:p"] }));
+
+    const run: RunActionFn = async () => failResult();
+    const executor = new Executor(db, makeOptions(run));
+    await executor.run();
+
+    const history = db.getHistory("x");
+    const escalated = history.find((h) => h.event_type === "escalated");
+    expect(escalated).toBeDefined();
+    expect((escalated!.data as any).supervisor_id).toBe("sup");
   });
 });

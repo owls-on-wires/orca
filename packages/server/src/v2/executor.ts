@@ -35,6 +35,7 @@ export interface ExecutorOptions {
   onActionWaiting?: (action: ActionConfig) => void;
   onEdgeTraversed?: (from: string, to: string, condition: string) => void;
   onToolUse?: (action: ActionConfig, toolName: string, toolInput: Record<string, unknown>) => void;
+  onUnhandledFailure?: (action: ActionConfig, condition: EdgeCondition) => void;
   onIdle?: () => void;
 }
 
@@ -331,6 +332,12 @@ export class Executor {
   private followEdges(action: ActionConfig, condition: EdgeCondition): void {
     const matchingEdges = this.db.getEdgesByCondition(action.id, condition);
 
+    // Global fallback: if no matching edges for a non-pass condition,
+    // look for a supervisor action to escalate to.
+    if (matchingEdges.length === 0 && condition !== "pass") {
+      this.escalateToSupervisor(action, condition);
+    }
+
     for (const edge of matchingEdges) {
       const target = this.db.getAction(edge.to_action);
       if (!target) continue;
@@ -401,6 +408,52 @@ export class Executor {
 
       this.options.onEdgeTraversed?.(action.id, edge.to_action, condition);
     }
+  }
+
+  /**
+   * Escalate an unhandled failure to a supervisor action.
+   * Looks for an action tagged "type:supervisor" in the same project.
+   * If found, activates it with context about the failure.
+   * If not found, fires the onUnhandledFailure callback.
+   */
+  private escalateToSupervisor(failedAction: ActionConfig, condition: EdgeCondition): void {
+    // Re-read the action to get the latest output (set by the executor before followEdges)
+    const freshAction = this.db.getAction(failedAction.id) ?? failedAction;
+
+    // Find a supervisor action in the same project
+    const projectTag = freshAction.project_id ? `project:${freshAction.project_id}` : null;
+    const allActions = projectTag
+      ? this.db.listActions({ tag: projectTag })
+      : this.db.listActions();
+
+    const supervisor = allActions.find(
+      (a) => a.tags.includes("type:supervisor") && a.id !== freshAction.id,
+    );
+
+    if (supervisor) {
+      // Inject failure context into supervisor params
+      const updatedParams = {
+        ...supervisor.params,
+        failed_action: freshAction.id,
+        failed_condition: condition,
+        failed_output: freshAction.output,
+      };
+      this.db.updateAction(supervisor.id, {
+        status: "pending",
+        params: updatedParams,
+        iteration: supervisor.status === "completed" || supervisor.status === "failed"
+          ? supervisor.iteration + 1
+          : supervisor.iteration,
+      });
+      this.db.appendHistory(failedAction.id, "escalated", {
+        supervisor_id: supervisor.id,
+        condition,
+      });
+    }
+
+    // Always fire the callback (even if supervisor was found) so the server
+    // can broadcast an SSE event
+    this.options.onUnhandledFailure?.(failedAction, condition);
   }
 
   /**

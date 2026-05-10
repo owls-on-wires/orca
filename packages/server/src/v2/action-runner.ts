@@ -159,7 +159,10 @@ async function runAgentAction(
     } else if (status === "failed") {
       condition = "fail";
     } else {
-      condition = "fail";
+      // Unknown or missing status — classify as error, not fail.
+      // "fail" means the agent tried and reported failure (retry makes sense).
+      // "error" means the output was malformed or unexpected (escalate).
+      condition = "error";
     }
 
     output = {

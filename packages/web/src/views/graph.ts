@@ -444,6 +444,13 @@ export function renderGraph(container: HTMLElement, opts: GraphOptions) {
 
     const contentRect = { x: -PAD_X, y: -PAD_Y, w: contentW + PAD_X, h: contentH + PAD_Y };
     initViewport(svgEl, contentRect, positioned, ox, oy);
+  } else {
+    // Update content bounds so scroll range covers new actions,
+    // but don't reset viewport position (user may have scrolled)
+    const newTotalW = contentW + PAD_X;
+    if (newTotalW !== contentBounds.totalW) {
+      contentBounds = { x: -PAD_X, y: -PAD_Y, w: contentW + PAD_X, h: contentH + PAD_Y, totalW: newTotalW };
+    }
   }
 
   const svgEl = svgRef!;

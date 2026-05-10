@@ -143,7 +143,7 @@ describe("agent action", () => {
     expect(result.output.status).toBe("failed");
   });
 
-  test("success with missing status → fail condition", async () => {
+  test("success with missing status → error condition", async () => {
     mockInvokeSimple.mockResolvedValueOnce({
       output: { summary: "Something happened" },
       costUsd: 0.02,
@@ -156,7 +156,7 @@ describe("agent action", () => {
     const action = agentAction();
     const result = (await runAction(action, [], defaultOptions)) as ActionResult;
 
-    expect(result.condition).toBe("fail");
+    expect(result.condition).toBe("error");
   });
 
   test("error with max turns reached → max_turns condition", async () => {

@@ -185,42 +185,88 @@ function buildDetailContent(detail: ActionDetail, logs: LogEntry[]): DocumentFra
   }
   header.appendChild(meta);
 
-  if (action.cost_usd > 0 || action.started_at) {
-    const stats = el('div', 'oc-detail__stats', []);
-    if (action.cost_usd > 0) stats.appendChild(span('', `$${action.cost_usd.toFixed(4)}`));
-    if (action.started_at) {
-      if (action.cost_usd > 0) stats.appendChild(span('oc-detail__sep', ' · '));
-      stats.appendChild(span('', relativeTime(action.started_at)));
+  // Stats line: cost + duration
+  const statsLine = el('div', 'oc-detail__stats', []);
+  if (action.cost_usd > 0) statsLine.appendChild(span('', `$${action.cost_usd.toFixed(4)}`));
+
+  if (action.started_at) {
+    if (action.cost_usd > 0) statsLine.appendChild(span('oc-detail__sep', ' · '));
+    if (action.completed_at) {
+      // Completed: show total wall-clock duration
+      const durationMs = new Date(action.completed_at).getTime() - new Date(action.started_at).getTime();
+      statsLine.appendChild(span('', formatDuration(durationMs)));
+    } else if (action.status === 'running') {
+      // Running: show live counter
+      const timerSpan = span('oc-detail__timer', '');
+      const startMs = new Date(action.started_at).getTime();
+      const updateTimer = () => { timerSpan.textContent = formatDuration(Date.now() - startMs); };
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000);
+      // Store interval for cleanup (will be cleared when detail re-renders)
+      (timerSpan as any).__interval = interval;
+      statsLine.appendChild(timerSpan);
+    } else {
+      statsLine.appendChild(span('', relativeTime(action.started_at)));
     }
-    header.appendChild(stats);
   }
+  if (statsLine.childNodes.length > 0) header.appendChild(statsLine);
 
   frag.appendChild(header);
 
-  // Edges
+  // Edges — split into 3 sections
+  const dependsOn = detail.edges.to.filter(e => e.condition === 'pass');
+  const onPass = detail.edges.from.filter(e => e.condition === 'pass');
+  const onFail = detail.edges.from.filter(e => e.condition !== 'pass');
+
   const edgeSection = el('div', 'oc-detail__section', []);
   edgeSection.appendChild(el('div', 'oz-eyebrow', ['Edges']));
   const edgeList = el('div', 'oc-detail__edges', []);
 
-  for (const e of detail.edges.to) {
-    const row = el('div', 'oc-detail__edge', []);
-    row.appendChild(span('oc-detail__edge-dir', '←'));
-    row.appendChild(span('oc-detail__edge-id', e.from_action));
-    row.appendChild(span('oc-detail__edge-cond', `[${e.condition}]`));
-    edgeList.appendChild(row);
+  if (dependsOn.length > 0) {
+    edgeList.appendChild(span('oc-detail__edge-label', 'depends on'));
+    for (const e of dependsOn) {
+      const row = el('div', 'oc-detail__edge', []);
+      row.appendChild(span('oc-detail__edge-dir', '←'));
+      row.appendChild(span('oc-detail__edge-id', e.from_action));
+      edgeList.appendChild(row);
+    }
   }
-  for (const e of detail.edges.from) {
-    const row = el('div', 'oc-detail__edge', []);
-    row.appendChild(span('oc-detail__edge-dir', '→'));
-    row.appendChild(span('oc-detail__edge-id', e.to_action));
-    row.appendChild(span('oc-detail__edge-cond', `[${e.condition}]`));
-    edgeList.appendChild(row);
+  if (onPass.length > 0) {
+    edgeList.appendChild(span('oc-detail__edge-label', 'on pass'));
+    for (const e of onPass) {
+      const row = el('div', 'oc-detail__edge', []);
+      row.appendChild(span('oc-detail__edge-dir', '→'));
+      row.appendChild(span('oc-detail__edge-id', e.to_action));
+      edgeList.appendChild(row);
+    }
+  }
+  if (onFail.length > 0) {
+    edgeList.appendChild(span('oc-detail__edge-label', 'on fail'));
+    for (const e of onFail) {
+      const row = el('div', 'oc-detail__edge', []);
+      row.appendChild(span('oc-detail__edge-dir', '→'));
+      row.appendChild(span('oc-detail__edge-id', e.to_action));
+      row.appendChild(span('oc-detail__edge-cond', `[${e.condition}]`));
+      edgeList.appendChild(row);
+    }
+  }
+  // Also show non-pass incoming edges (retry back-edges)
+  const incomingFail = detail.edges.to.filter(e => e.condition !== 'pass');
+  if (incomingFail.length > 0) {
+    edgeList.appendChild(span('oc-detail__edge-label', 'retry from'));
+    for (const e of incomingFail) {
+      const row = el('div', 'oc-detail__edge', []);
+      row.appendChild(span('oc-detail__edge-dir', '←'));
+      row.appendChild(span('oc-detail__edge-id', e.from_action));
+      row.appendChild(span('oc-detail__edge-cond', `[${e.condition}]`));
+      edgeList.appendChild(row);
+    }
   }
   edgeSection.appendChild(edgeList);
   frag.appendChild(edgeSection);
 
-  // Tool calls
-  const toolCalls = logs.filter(l => l.event_type === 'tool_use');
+  // Tool calls — filter out StructuredOutput (shown in Output section)
+  const toolCalls = logs.filter(l => l.event_type === 'tool_use' && l.tool_name !== 'StructuredOutput');
   if (toolCalls.length > 0 || action.status === 'running') {
     const toolSection = el('div', 'oc-detail__section', []);
     const toolHeader = el('div', 'oz-eyebrow', [
@@ -269,20 +315,37 @@ function buildDetailContent(detail: ActionDetail, logs: LogEntry[]): DocumentFra
     frag.appendChild(outSection);
   }
 
-  // Params (collapsed)
+  // Params (structured key/value)
   if (action.params && Object.keys(action.params).length > 0) {
     const paramSection = el('div', 'oc-detail__section', []);
-    const paramHeader = el('div', 'oz-eyebrow oc-detail__toggle', ['Params ▸']);
-    const paramContent = el('pre', 'oc-detail__pre oc-detail__collapsed', [
-      JSON.stringify(action.params, null, 2)
-    ]);
-    paramHeader.addEventListener('click', () => {
-      paramContent.classList.toggle('oc-detail__collapsed');
-      paramHeader.textContent = paramContent.classList.contains('oc-detail__collapsed')
-        ? 'Params ▸' : 'Params ▾';
-    });
-    paramSection.appendChild(paramHeader);
-    paramSection.appendChild(paramContent);
+    paramSection.appendChild(el('div', 'oz-eyebrow', ['Params']));
+    const paramList = el('div', 'oc-detail__params', []);
+
+    for (const [key, value] of Object.entries(action.params)) {
+      const row = el('div', 'oc-detail__param', []);
+      row.appendChild(span('oc-detail__param-key', key));
+
+      if (key === 'prompt' && typeof value === 'string') {
+        // Show "view prompt" link that opens a modal
+        const link = el('a', 'oc-detail__prompt-link', ['view prompt']);
+        (link as HTMLAnchorElement).href = '#';
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          showPromptModal(value);
+        });
+        row.appendChild(link);
+      } else if (typeof value === 'string') {
+        row.appendChild(span('oc-detail__param-val', shorten(value, 80)));
+      } else if (typeof value === 'number' || typeof value === 'boolean') {
+        row.appendChild(span('oc-detail__param-val oc-detail__param-val--literal', String(value)));
+      } else {
+        row.appendChild(span('oc-detail__param-val', shorten(JSON.stringify(value), 80)));
+      }
+
+      paramList.appendChild(row);
+    }
+
+    paramSection.appendChild(paramList);
     frag.appendChild(paramSection);
   }
 
@@ -325,9 +388,10 @@ function buildToolRow(toolName: string, toolInput: Record<string, unknown>): HTM
 
 function connectLiveUpdates(actionId: string, aside: HTMLElement) {
   const url = `${api.getBaseUrl()}/actions/${actionId}/events`;
-  currentSSE = new EventSource(url);
+  const sse = new EventSource(url);
+  currentSSE = sse;
 
-  currentSSE.addEventListener('tool_use', (event: MessageEvent) => {
+  sse.addEventListener('tool_use', (event: MessageEvent) => {
     if (currentActionId !== actionId) return;
     const data = JSON.parse(event.data);
     const toolList = document.getElementById('detail-tool-list');
@@ -342,13 +406,12 @@ function connectLiveUpdates(actionId: string, aside: HTMLElement) {
     }
   });
 
-  currentSSE.addEventListener('action_completed', () => {
+  sse.addEventListener('action_completed', () => {
     if (currentActionId !== actionId) return;
-    // Re-render with final data
     renderDetail(actionId);
   });
 
-  currentSSE.onerror = () => {
+  sse.onerror = () => {
     // Silently handle SSE errors
   };
 }
@@ -356,4 +419,44 @@ function connectLiveUpdates(actionId: string, aside: HTMLElement) {
 export function cleanupDetail() {
   if (currentSSE) { currentSSE.close(); currentSSE = null; }
   currentActionId = null;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt modal
+// ---------------------------------------------------------------------------
+
+function showPromptModal(prompt: string) {
+  // Remove existing modal if any
+  document.getElementById('oc-prompt-modal')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'oc-prompt-modal';
+  overlay.className = 'oc-modal-overlay';
+
+  const modal = el('div', 'oc-modal', []);
+  const header = el('div', 'oc-modal__header', []);
+  header.appendChild(el('div', 'oz-eyebrow', ['Prompt']));
+  const closeBtn = el('button', 'oc-modal__close', ['\u00D7']);
+  closeBtn.addEventListener('click', () => overlay.remove());
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  const body = document.createElement('pre');
+  body.className = 'oc-modal__body';
+  body.textContent = prompt;
+  modal.appendChild(body);
+
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  document.addEventListener('keydown', function handler(e) {
+    if (e.key === 'Escape') {
+      overlay.remove();
+      document.removeEventListener('keydown', handler);
+    }
+  });
+
+  document.body.appendChild(overlay);
 }

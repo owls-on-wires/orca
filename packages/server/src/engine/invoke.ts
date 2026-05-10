@@ -264,7 +264,12 @@ export async function invokeSimple(
       onToolUse(event.toolName, event.toolInput ?? {});
     }
     if (event.type === "result" && event.result) {
-      result = event.result;
+      // Prefer a result with non-null structured output over one without.
+      // The SDK sometimes yields a second result with null output after a
+      // valid one — don't let the null overwrite the real output.
+      if (!result || event.result.output !== null) {
+        result = event.result;
+      }
     }
   }
   return result ?? {

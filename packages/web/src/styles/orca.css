@@ -69,14 +69,15 @@
 
 /* ── App scaffolding ──────────────────────────────────────────────── */
 .oc-app {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .oc-app__body {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 380px;
+  grid-template-columns: 1fr 570px;
   grid-template-rows: 1fr;
   gap: 0;
   padding: 0 28px 24px;
@@ -253,7 +254,7 @@
     color-mix(in oklab, var(--paper-tint) 25%, var(--paper));
   padding: 0;
   overflow: hidden;
-  min-height: 300px;
+  min-height: 0;
 }
 .theme-dark .oc-graph,
 [data-theme="dark"] .oc-graph {
@@ -378,7 +379,6 @@
   gap: 22px;
   overflow-y: auto;
   min-height: 0;
-  max-height: calc(100vh - 260px);
 }
 .oc-detail--empty .oc-detail__legend {
   margin-top: 28px;
@@ -545,6 +545,9 @@
 .oc-detail__edge-dir { color: var(--ink-mute); width: 12px; }
 .oc-detail__edge-id { color: var(--ink-soft); }
 .oc-detail__edge-cond { color: var(--ink-mute); font-size: 11px; }
+.oc-detail__edge-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-mute); margin-top: 6px; margin-bottom: 2px; }
+.oc-detail__edge-label:first-child { margin-top: 0; }
+.oc-detail__timer { color: var(--accent); font-style: italic; }
 
 .oc-detail__tools { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; max-height: 300px; overflow-y: auto; }
 .oc-detail__tool { font-size: 12px; font-family: var(--font-mono); display: flex; gap: 8px; padding: 2px 0; }
@@ -557,9 +560,44 @@
 .oc-detail__output-notes { font-size: 12px; color: var(--ink-mute); margin-top: 4px; font-style: italic; }
 
 .oc-detail__pre { font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); background: var(--paper-tint); padding: 10px 12px; border-radius: var(--r-2); overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin-top: 6px; max-height: 200px; overflow-y: auto; }
-.oc-detail__collapsed { display: none; }
-.oc-detail__toggle { cursor: pointer; user-select: none; }
-.oc-detail__toggle:hover { color: var(--accent); }
+
+.oc-detail__params { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.oc-detail__param { display: flex; gap: 10px; font-size: 12px; padding: 3px 0; border-bottom: 1px dotted var(--hairline); align-items: baseline; }
+.oc-detail__param:last-child { border-bottom: none; }
+.oc-detail__param-key { color: var(--ink-mute); font-family: var(--font-mono); font-size: 11px; min-width: 70px; flex-shrink: 0; }
+.oc-detail__param-val { color: var(--ink-soft); word-break: break-word; }
+.oc-detail__param-val--literal { color: var(--accent); }
+.oc-detail__prompt-link { color: var(--accent); text-decoration: none; font-style: italic; font-size: 12px; cursor: pointer; }
+.oc-detail__prompt-link:hover { text-decoration: underline; }
+
+/* ── Prompt modal ──────────────────────────────────────────────── */
+.oc-modal-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+  padding: 40px;
+}
+.oc-modal {
+  background: var(--paper); border: 1px solid var(--hairline);
+  border-radius: var(--r-3); max-width: 720px; width: 100%;
+  max-height: 80vh; display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+.oc-modal__header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px; border-bottom: 1px solid var(--hairline);
+}
+.oc-modal__close {
+  background: none; border: none; font-size: 20px; cursor: pointer;
+  color: var(--ink-mute); padding: 0 4px; line-height: 1;
+}
+.oc-modal__close:hover { color: var(--ink); }
+.oc-modal__body {
+  padding: 20px; overflow-y: auto; flex: 1;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7;
+  color: var(--ink-soft); white-space: pre-wrap; word-break: break-word;
+  margin: 0;
+}
 
 .oc-detail__history { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .oc-detail__hist-row { font-size: 12px; display: flex; gap: 10px; padding: 2px 0; border-bottom: 1px dotted var(--hairline); }

@@ -2,15 +2,15 @@
 
 ## UI
 
-- [ ] Graph container doesn't re-render when new action chains are added dynamically (can't scroll to see them); the graph updates but the scale/view container does not
-- [ ] Sidebar should auto-follow the currently executing action (unless user has manually selected a different one)
-- [ ] Sidebar: don't show detail for StructuredOutput tool calls (output is already displayed in the Output section)
-- [ ] Sidebar: Params section should be auto-expanded and rendered as structured key/value (like Output), not raw JSON text. The `prompt` key should not display its value inline — instead show a "view prompt" link that opens a page-centered modal with the full prompt string, properly formatted.
-- [ ] Sidebar: should not affect graph height when content overflows — scroll independently within fixed bounds
-- [ ] Sidebar: show wall-clock duration (completed: total time, running: live counter)
-- [ ] Sidebar: split edge list into 3 sections — "depends on" (incoming pass), "on pass" (outgoing pass), "on fail" (outgoing fail/error/stuck/etc.) — instead of a flat list of all edges
-- [ ] Sidebar: widen to ~570px (currently 380px in `oc-app__body` grid-template-columns)
-- [ ] Replace graph polling with SSE reconnect-and-refresh — remove the 3-second `setInterval` poll in `main.ts`. Instead, track SSE disconnect gaps in `events.ts`. On reconnect (`connected` event after an error), fetch full state: `GET /actions` (graph), `GET /health` (stats), and if a detail panel is open, `GET /actions/:id` + logs. Also refresh on `visibilitychange` when tab becomes visible. Only fetch when data might be stale, not continuously. Only show "SSE disconnected" in the footer if reconnect fails for more than ~5 seconds — brief reconnect gaps during tab switches should be invisible to the user.
+- [x] Graph container now updates content bounds on every redraw so new action chains are scrollable — `contentBounds.totalW` is recalculated without resetting viewport position
+- [x] Sidebar auto-follows the currently executing action — on graph refresh, if user hasn't manually clicked a node, the sidebar selects the running action. Manual click sets `userManuallySelected` flag; deselecting clears it.
+- [x] Sidebar: StructuredOutput tool calls filtered from tool list (output already shown in Output section)
+- [x] Sidebar: Params rendered as structured key/value (auto-expanded). `prompt` key shows "view prompt" link that opens a page-centered modal with the full prompt in monospace. Modal closes on × button, overlay click, or Escape. Numbers/booleans highlighted in accent color.
+- [x] Sidebar no longer affects graph height — app uses `height: 100vh` with `overflow: hidden`, grid constrains both children to the same row height, detail panel scrolls internally via `overflow-y: auto` + `min-height: 0`
+- [x] Sidebar: wall-clock duration — completed actions show total time (e.g. "35.2s"), running actions show a live counter updated every second
+- [x] Sidebar: edge list split into "depends on" (incoming pass), "on pass" (outgoing pass), "on fail" (outgoing non-pass), "retry from" (incoming non-pass) sections
+- [x] Sidebar: widened to 570px
+- [x] Replaced graph polling with SSE-driven refresh — removed 3-second `setInterval`. Graph now refreshes on SSE `action_started`/`action_completed`/`action_waiting` events, on SSE reconnect after a gap, and on `visibilitychange` (tab visible). Disconnect display delayed 5 seconds — brief reconnect gaps are invisible. `events.ts` tracks disconnect state with `onReconnect` callback.
 
 ## Server
 
@@ -20,9 +20,49 @@
 
 ## Executor
 
-- [ ] Fix `invokeSimple` swallowing valid structured output — the Claude SDK sometimes yields two result messages: the first with a valid `structured_output` (e.g., `{status: "passed"}`), the second with `structured_output: null`. `invokeSimple` at `invoke.ts:257` blindly takes the last one, so the valid output is overwritten by null. The action runner then classifies the null output as `status: "unknown"` / condition `"fail"`, causing the action to fail despite the agent completing successfully. Fix: prefer a result with non-null `structured_output` over one without. This is the root cause of the spurious QA failures in the link-board fixture.
-- [ ] Handle "unknown" agent output gracefully — when an agent returns `status: "unknown"` or a malformed structured output, the action runner should classify this as `error` (not `fail`), since the agent didn't explicitly fail — it just didn't produce a valid result. This distinction matters for edge routing: `fail` means "I tried and it didn't work" (retry makes sense), `error` means "something went wrong with the execution itself" (escalate or retry differently).
-- [ ] Default fail/error edges for dynamically-created actions — actions created via `POST /actions` have no default edges (unlike actions from config expansion which get defaults for all 7 conditions). Consider: when an action has NO outgoing edges for a failure condition, the executor should either (a) retry the action in-place (up to max_iterations), or (b) escalate to a supervisor if one exists, or (c) pause the executor and emit an SSE event so a human/planner can intervene. Currently it silently stalls.
-- [ ] Global fallback supervisor — when an action completes with a non-pass condition and has no matching outgoing edge, the executor should look for an action tagged `type:supervisor` in the project and activate it with context about the failure (failed_action ID, failed_condition, output). The supervisor uses the HTTP API to diagnose and fix the issue (update prompts, add edges, retry). This makes explicit error edges to the supervisor unnecessary — it's a catch-all safety net. The supervisor action is defined in the project YAML and sits inactive until needed.
+- [x] Fix `invokeSimple` swallowing valid structured output — `invokeSimple` now prefers a result with non-null `structured_output` over one without. Prevents the SDK's spurious second result from overwriting valid output.
+- [x] Handle "unknown" agent output gracefully — unknown/missing status from agent output now classifies as `error` condition (not `fail`). `fail` = agent explicitly reported failure; `error` = malformed/unexpected output.
+- [x] Default fail/error edges for dynamically-created actions + Global fallback supervisor — when an action completes with a non-pass condition and has no matching outgoing edge, the executor looks for an action tagged `type:supervisor` in the same project and activates it with failure context (`failed_action`, `failed_condition`, `failed_output` injected into params). If no supervisor exists, fires `onUnhandledFailure` callback (SSE `unhandled_failure` event). Pass conditions with no edges do NOT escalate. Supervisor can be re-activated on subsequent failures. Escalation is recorded in action history.
 
-after all this, update the api schema, and update all the claude code skill files in here entirely for orca v2.
+## API Docs and Agent Self-Discovery
+
+How it works:
+
+    GET / returns a discovery document:
+
+    {
+      "name": "orca",
+      "version": "2.0.0",
+      "docs": {
+        "llms": "llms.txt",
+        "openapi": "openapi.yaml",
+        "changelog": "...",
+        "guides": {
+          "dynamic-tasking": "/docs/guides/dynamic-tasking.md",
+          "templates": "/docs/guides/templates.md"
+        }
+      }
+    }
+
+    The key files served from /docs/:
+
+    - /docs/llms.txt — The LLM-optimized reference. This is the one the planner agent reads. It is essentially a general overview, as well as table of contents for the more specific documentation. It shouldn't need frequently updated; it should note locations of docs, general system overview, requirements like auth or rate limits, etc. It's a concise, prompt-friendly document: Written for an LLM audience, not a human one.
+    - /docs/openapi.yaml — The full OpenAPI spec, served directly from the schemas/ directory. Machine-readable, complete.
+    - /docs/guides/dynamic-tasking.md — How to use POST /groups, how to chain planners, template selection, etc.
+    - /docs/guides/common-patterns.md - Commonly used patterns, etc.
+
+    Best implementation:
+
+    1. The server already has handleRoot returning HTML. Change it to content-negotiate: if Accept: application/json, return the discovery JSON. Otherwise return the HTML dashboard link.
+    2. Add a GET /docs/* route that serves static files from a docs/ directory in the server package. The llms.txt and guides live there as regular files — easy to update alongside the code.
+
+    What the planner prompt shrinks to:
+
+    Instead of the massive prompt documenting every API call, the planner just gets:
+
+    The orca orchestrator API is at http://localhost:7072.
+    Read http://localhost:7072/llms.txt.
+
+    One line. The agent fetches llms.txt on its first turn, gets the complete API reference, and proceeds. Any API changes are immediately visible — no fixture updates, no skill file syncing, no ORCA-API.yaml to copy around.
+
+    The llms.txt convention is emerging as a standard (similar to robots.txt for crawlers). Having it at a well-known path means any LLM-powered tool can discover your API without prior configuration.

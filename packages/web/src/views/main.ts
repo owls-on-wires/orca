@@ -163,6 +163,7 @@ export const renderFootline = () => {
 let graphFilter = 'pass';
 let graphSelected: string | null = null;
 let graphHover: string | null = null;
+let userManuallySelected = false; // true when user clicked a node
 
 let currentActions: ApiAction[] = [];
 let currentEdges: ApiEdge[] = [];
@@ -186,6 +187,8 @@ async function fetchGraphData(): Promise<{ actions: ApiAction[]; edges: ApiEdge[
   return { actions, edges };
 }
 
+let drawGraph: (() => void) | null = null;
+
 export const initGraph = async () => {
   const container = document.getElementById('graph-container');
   if (!container) return;
@@ -202,7 +205,13 @@ export const initGraph = async () => {
       selectedId: graphSelected,
       hoverId: graphHover,
       onSelect: (id) => {
-        graphSelected = graphSelected === id ? null : id;
+        if (graphSelected === id) {
+          graphSelected = null;
+          userManuallySelected = false;
+        } else {
+          graphSelected = id;
+          userManuallySelected = true;
+        }
         draw();
         renderDetail(graphSelected);
       },
@@ -213,15 +222,30 @@ export const initGraph = async () => {
     });
   };
 
+  drawGraph = draw;
   draw();
+};
 
-  setInterval(async () => {
-    const fresh = await fetchGraphData();
-    const changed = JSON.stringify(fresh.actions.map(a => a.status)) !== JSON.stringify(currentActions.map(a => a.status));
-    if (changed) {
-      currentActions = fresh.actions;
-      currentEdges = fresh.edges;
-      draw();
+/** Refresh graph data from the API and redraw. Called on SSE reconnect and visibility change. */
+export const refreshGraph = async () => {
+  if (!drawGraph) return;
+  const fresh = await fetchGraphData();
+  const changed = fresh.actions.length !== currentActions.length ||
+    JSON.stringify(fresh.actions.map(a => a.status)) !== JSON.stringify(currentActions.map(a => a.status));
+  if (changed) {
+    currentActions = fresh.actions;
+    currentEdges = fresh.edges;
+
+    // Auto-follow: if user hasn't manually selected a node, show the running action
+    if (!userManuallySelected) {
+      const running = currentActions.find(a => a.status === 'running');
+      const newId = running?.id ?? null;
+      if (newId !== graphSelected) {
+        graphSelected = newId;
+        renderDetail(graphSelected);
+      }
     }
-  }, 3000);
+
+    drawGraph();
+  }
 };

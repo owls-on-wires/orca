@@ -950,6 +950,14 @@ export function startServer(options: ServerOptions = {}) {
       onEdgeTraversed: (from, to, condition) => {
         broadcast(state, "edge_traversed", { from, to, condition });
       },
+      onUnhandledFailure: (action, condition) => {
+        broadcast(state, "unhandled_failure", {
+          action_id: action.id,
+          condition,
+          output: action.output,
+        }, action.id);
+        broadcast(state, "stats", buildStats(state));
+      },
       onIdle: () => {
         broadcast(state, "executor_state", { state: "idle", pending_count: 0 });
         broadcast(state, "stats", buildStats(state));
