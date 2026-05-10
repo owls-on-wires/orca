@@ -106,7 +106,7 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
       const status = isFirst ? "pending" : "inactive";
 
       // Merge params: type defaults + top-level type fields (command, timeout, etc.)
-      const reservedKeys = new Set(['type', 'params', 'edges']);
+      const reservedKeys = new Set(['type', 'params', 'edges', 'tags']);
       const topLevelParams: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(typeDef)) {
         if (!reservedKeys.has(k)) topLevelParams[k] = v;
@@ -143,18 +143,23 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
         );
       }
 
-      // Auto-generate tags
+      // Auto-generate tags + merge type-level tags
       const tags = [
         `type:${actionType}`,
         `task:${task.id}`,
         `project:${config.name}`,
         ...(task.tags ?? []),
+        ...((typeDef as any).tags ?? []),
       ];
+
+      // Supervisor actions always start inactive (activated by fallback only)
+      const isSupervisor = tags.includes("type:supervisor");
+      const finalStatus = isSupervisor ? "inactive" : status;
 
       const action = createAction({
         id: actionId,
         type: typeDef.type,
-        status,
+        status: finalStatus,
         project_id: config.name,
         params,
         tags,
@@ -320,7 +325,7 @@ export function expandTask(
     // All actions start inactive — caller activates via `after` or PATCH
     const status = "inactive";
 
-    const reservedKeys = new Set(["type", "params", "edges"]);
+    const reservedKeys = new Set(["type", "params", "edges", "tags"]);
     const topLevelParams: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(typeDef)) {
       if (!reservedKeys.has(k)) topLevelParams[k] = v;
@@ -343,7 +348,6 @@ export function expandTask(
       Object.assign(params, task.overrides[actionType]);
     }
 
-    // Validate: agent actions must have a prompt from somewhere
     if (typeDef.type === "agent" && !params.prompt) {
       throw new Error(
         `Agent action "${actionId}" has no prompt. Set prompt on the task, in the template type's params, or via overrides.`,
@@ -355,6 +359,7 @@ export function expandTask(
       `task:${task.id}`,
       `project:${projectName}`,
       ...(task.tags ?? []),
+      ...((typeDef as any).tags ?? []),
     ];
 
     const action = createAction({
@@ -486,7 +491,7 @@ export function reimportTasks(
       const actionId = `${task.id}.${actionType}`;
       const isFirst = i === 0 && (!task.depends_on || task.depends_on.length === 0);
 
-      const reservedKeys = new Set(["type", "params", "edges"]);
+      const reservedKeys = new Set(["type", "params", "edges", "tags"]);
       const topLevelParams: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(typeDef)) {
         if (!reservedKeys.has(k)) topLevelParams[k] = v;
@@ -517,12 +522,16 @@ export function reimportTasks(
         `task:${task.id}`,
         `project:${config.name}`,
         ...(task.tags ?? []),
+        ...((typeDef as any).tags ?? []),
       ];
+
+      const isSupervisor = tags.includes("type:supervisor");
+      const finalStatus = isSupervisor ? "inactive" : (isFirst ? "pending" : "inactive");
 
       actions.push(createAction({
         id: actionId,
         type: typeDef.type,
-        status: isFirst ? "pending" : "inactive",
+        status: finalStatus,
         project_id: config.name,
         params,
         tags,

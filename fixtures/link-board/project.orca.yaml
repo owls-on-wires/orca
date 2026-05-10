@@ -147,10 +147,14 @@ templates:
                - tdd: data layer, models, utilities
                - tdd-qa: HTTP endpoints, user-facing API
                - dev: config changes, package.json, simple refactors
-            5. Create each task via POST /groups:
+            5. Create the FIRST task with "after" set to YOUR OWN action ID
+               (so it starts when you complete). Find your action ID from the
+               graph state (it's the action with status "running").
+               For subsequent tasks, set "after" to the previous task's
+               last action (commit for tdd/dev, qa for tdd-qa).
                curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
                  -d '{"id":"task-name","template":"tdd","project_id":"link-board",
-                      "prompt":"Implement...","after":"previous.commit",
+                      "prompt":"Implement...","after":"plan-epic-N.plan",
                       "overrides":{"write-tests":{"prompt":"Write tests for..."},
                                    "eval":{"command":"bun test test/task.test.ts"}}}'
             6. After the last task, create a sprint QA:
@@ -166,10 +170,7 @@ templates:
                  -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"pass"}'
                curl -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
                  -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"fail"}'
-            9. Activate the first task:
-               curl -X PATCH http://localhost:7072/actions/first-task.write-tests \
-                 -H 'Content-Type: application/json' -d '{"status":"pending"}'
-            10. If ALL 5 epics are complete and QA has passed, report
+            9. If ALL 5 epics are complete and QA has passed, report
                 status: passed. Do NOT create more tasks.
 
             ## Prompt guidelines
