@@ -7,4 +7,6 @@ bin/orca*
 .playwright-mcp/
 /data/
 /tmp/
-fixtures/*/.git/
+fixtures/*/.orca/
+fixtures/*/node_modules/
+fixtures/*/bun.lock

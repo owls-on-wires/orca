@@ -1,0 +1,1024 @@
+openapi: 3.2.0
+info:
+  title: Orca v2 API
+  description: >
+    Action-centric graph executor API. Manages a persistent, mutable action
+    graph with conditional edges, SQLite persistence, and live SSE streaming.
+    Actions execute via a serial scheduler; the graph can be modified at any
+    time through the REST API.
+  version: 2.0.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:7072
+    description: Local development server
+
+tags:
+  - name: Actions
+    description: CRUD and lifecycle operations on actions
+  - name: Edges
+    description: Create and delete edges between actions
+  - name: Import
+    description: Import YAML configs into the graph
+  - name: Executor
+    description: Pause, resume, and inspect the scheduler
+  - name: Defaults
+    description: Read and update action type defaults
+  - name: Events
+    description: Server-Sent Event streams for live updates
+  - name: System
+    description: Health check and dashboard
+
+paths:
+  /:
+    get:
+      tags: [System]
+      summary: Serve the web dashboard
+      responses:
+        "200":
+          description: Dashboard HTML
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      responses:
+        "200":
+          description: Server health and action counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /import:
+    post:
+      tags: [Import]
+      summary: Import a YAML config into the graph
+      description: >
+        Parses a YAML config, expands tasks into actions and edges,
+        creates a project record, and inserts everything into the database.
+        Actions whose dependencies are already met start as "pending" and
+        the executor picks them up immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    yaml:
+                      type: string
+                      description: Raw YAML config string
+                  required: [yaml]
+                - type: object
+                  properties:
+                    config:
+                      $ref: "#/components/schemas/OrcaV2Config"
+                  required: [config]
+      responses:
+        "200":
+          description: Actions and edges created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  actions:
+                    type: array
+                    items:
+                      type: string
+                    description: IDs of all created actions
+                  edges:
+                    type: integer
+                    description: Number of edges created
+                required: [actions, edges]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /actions:
+    post:
+      tags: [Actions]
+      summary: Create a new action
+      description: >
+        Creates a single action directly (without config expansion).
+        Useful for dynamic task creation by supervisor/planner agents.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Unique action ID (e.g., "auth.develop")
+                type:
+                  $ref: "#/components/schemas/ActionType"
+                status:
+                  $ref: "#/components/schemas/ActionStatus"
+                  default: inactive
+                project_id:
+                  type: string
+                  nullable: true
+                params:
+                  type: object
+                  additionalProperties: true
+                  default: {}
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  default: []
+              required: [id, type]
+      responses:
+        "201":
+          description: Action created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Action with this ID already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+    get:
+      tags: [Actions]
+      summary: List actions with optional filters
+      parameters:
+        - name: tag
+          in: query
+          schema:
+            type: string
+          description: "Filter by tag (e.g., type:qa, task:auth, project:orca)"
+          example: "task:auth"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ActionStatus"
+          description: Filter by status
+        - name: type
+          in: query
+          schema:
+            $ref: "#/components/schemas/ActionType"
+          description: Filter by action type
+      responses:
+        "200":
+          description: List of matching actions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActionConfig"
+    patch:
+      tags: [Actions]
+      summary: Bulk update actions by tag
+      parameters:
+        - name: tag
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tag to match for bulk update
+          example: "type:qa"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionUpdate"
+      responses:
+        "200":
+          description: Number of actions updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+                required: [updated]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /actions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ActionId"
+    get:
+      tags: [Actions]
+      summary: Get action detail with edges and history
+      responses:
+        "200":
+          description: Action with edges and history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Actions]
+      summary: Update action params, tags, or status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionUpdate"
+      responses:
+        "200":
+          description: Updated action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Actions]
+      summary: Delete action and its edges/history
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    const: true
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /actions/{id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/ActionId"
+    post:
+      tags: [Actions]
+      summary: Reset a failed action to pending
+      description: >
+        Clears the action's output, increments iteration, and sets status
+        to "pending". The executor picks it up on the next cycle.
+      responses:
+        "200":
+          description: Action reset to pending
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: "pending"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /actions/{id}/skip:
+    parameters:
+      - $ref: "#/components/parameters/ActionId"
+    post:
+      tags: [Actions]
+      summary: Mark action as skipped
+      responses:
+        "200":
+          description: Action skipped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: "skipped"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /actions/{id}/respond:
+    parameters:
+      - $ref: "#/components/parameters/ActionId"
+    post:
+      tags: [Actions]
+      summary: Respond to a waiting action
+      description: >
+        Completes a waiting action (human-in-the-loop). Sets the action's
+        output from the request body and follows outgoing edges based on
+        the response status. Wakes the executor if idle.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RespondBody"
+      responses:
+        "200":
+          description: Action completed with response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: "completed"
+                  condition:
+                    $ref: "#/components/schemas/EdgeCondition"
+        "400":
+          description: Action is not in waiting status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /actions/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/ActionId"
+    get:
+      tags: [Events]
+      summary: SSE stream filtered to a specific action
+      responses:
+        "200":
+          description: Per-action event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              itemSchema:
+                $ref: "#/components/schemas/SSEEvent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /edges:
+    post:
+      tags: [Edges]
+      summary: Create an edge between two actions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EdgeCreate"
+      responses:
+        "200":
+          description: Edge created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdgeConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /edges/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: Edge ID
+    delete:
+      tags: [Edges]
+      summary: Delete an edge
+      responses:
+        "200":
+          description: Edge deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    const: true
+
+  /defaults:
+    get:
+      tags: [Defaults]
+      summary: Get current action type defaults
+      responses:
+        "200":
+          description: Type defaults map
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/ActionTypeDefaults"
+    patch:
+      tags: [Defaults]
+      summary: Update action type defaults
+      description: Merges into existing defaults.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                $ref: "#/components/schemas/ActionTypeDefaults"
+      responses:
+        "200":
+          description: Updated defaults
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/ActionTypeDefaults"
+
+  /executor/pause:
+    post:
+      tags: [Executor]
+      summary: Pause the executor
+      description: Stops scheduling after the current action completes.
+      responses:
+        "200":
+          description: Executor paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutorState"
+
+  /executor/resume:
+    post:
+      tags: [Executor]
+      summary: Resume the executor
+      description: Restarts the scheduling loop.
+      responses:
+        "200":
+          description: Executor resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutorState"
+
+  /executor/status:
+    get:
+      tags: [Executor]
+      summary: Get executor status
+      responses:
+        "200":
+          description: Current executor state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutorStatus"
+
+  /events:
+    get:
+      tags: [Events]
+      summary: Global SSE event stream
+      description: >
+        Server-Sent Events stream for all graph activity. Receives events
+        for action starts, completions, edge traversals, and executor state
+        changes. Heartbeat comments sent every 30s to keep connection alive.
+      responses:
+        "200":
+          description: Global event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              itemSchema:
+                $ref: "#/components/schemas/SSEEvent"
+
+components:
+  parameters:
+    ActionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Action ID (e.g., "auth.develop")
+      example: "auth.develop"
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    ActionType:
+      type: string
+      enum: [agent, command]
+
+    ActionStatus:
+      type: string
+      enum: [inactive, pending, running, completed, failed, skipped, waiting]
+
+    EdgeCondition:
+      type: string
+      enum: [pass, fail, max_turns, timeout, cost_exceeded, stuck, error]
+
+    ActionOutput:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Condition-driving status (e.g., "passed", "failed")
+        summary:
+          type: string
+          description: Human/agent-readable description of the outcome
+        notes:
+          type: string
+          description: Free-form guidance for the next action
+        issues:
+          type: string
+          description: Description of failures (if any)
+      required: [status, summary]
+      additionalProperties: true
+
+    ActionConfig:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "auth.develop"
+        type:
+          $ref: "#/components/schemas/ActionType"
+        status:
+          $ref: "#/components/schemas/ActionStatus"
+        project_id:
+          type: string
+          nullable: true
+          description: ID of the project this action belongs to
+          example: "my-project"
+        params:
+          type: object
+          additionalProperties: true
+          description: >
+            Dynamic action parameters. For agent actions: prompt, model,
+            max_turns, toolset, output_schema, scope. For command actions:
+            command, timeout, wait_for, wait_for_response.
+        output:
+          $ref: "#/components/schemas/ActionOutput"
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+          example: ["type:develop", "task:auth", "project:orca"]
+        cost_usd:
+          type: number
+          format: double
+          example: 2.45
+        iteration:
+          type: integer
+          example: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - id
+        - type
+        - status
+        - params
+        - tags
+        - cost_usd
+        - iteration
+        - created_at
+        - updated_at
+
+    ActionDetail:
+      type: object
+      properties:
+        action:
+          $ref: "#/components/schemas/ActionConfig"
+        edges:
+          type: object
+          properties:
+            from:
+              type: array
+              items:
+                $ref: "#/components/schemas/EdgeConfig"
+              description: Outgoing edges from this action
+            to:
+              type: array
+              items:
+                $ref: "#/components/schemas/EdgeConfig"
+              description: Incoming edges to this action
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryEntry"
+      required: [action, edges, history]
+
+    ActionUpdate:
+      type: object
+      description: Partial update — only included fields are changed
+      properties:
+        params:
+          type: object
+          additionalProperties: true
+          description: Merged into existing params
+        tags:
+          type: array
+          items:
+            type: string
+          description: Replaces existing tags
+        status:
+          $ref: "#/components/schemas/ActionStatus"
+
+    EdgeConfig:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Auto-generated edge ID
+        from_action:
+          type: string
+          example: "auth.eval"
+        to_action:
+          type: string
+          example: "auth.deploy"
+        condition:
+          $ref: "#/components/schemas/EdgeCondition"
+      required: [from_action, to_action, condition]
+
+    EdgeCreate:
+      type: object
+      properties:
+        from_action:
+          type: string
+        to_action:
+          type: string
+        condition:
+          $ref: "#/components/schemas/EdgeCondition"
+      required: [from_action, to_action, condition]
+
+    HistoryEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        action_id:
+          type: string
+        iteration:
+          type: integer
+          nullable: true
+        event_type:
+          type: string
+          description: "Event type: completed, started, etc."
+        data:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Event-specific data (condition, output_hash, cost_usd, etc.)
+        timestamp:
+          type: string
+          format: date-time
+      required: [id, action_id, event_type, timestamp]
+
+    ActionTypeDefaults:
+      type: object
+      properties:
+        type:
+          $ref: "#/components/schemas/ActionType"
+        params:
+          type: object
+          additionalProperties: true
+          description: Default params for this action type
+        edges:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Default edge routing. Keys are EdgeCondition values, values are
+            routing shorthands: "first", "next", "complete", or a literal action ID.
+          example:
+            pass: next
+            fail: first
+            max_turns: supervisor
+      required: [type]
+
+    RespondBody:
+      type: object
+      properties:
+        status:
+          type: string
+          description: "Response status: 'passed'/'approved' maps to pass edge, anything else maps to fail"
+          example: "passed"
+        summary:
+          type: string
+          description: Description of the response
+          example: "Approved by human reviewer"
+        notes:
+          type: string
+          description: Additional notes for downstream actions
+      required: [status, summary]
+
+    ExecutorState:
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [running, paused, idle]
+      required: [state]
+
+    ExecutorStatus:
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [running, paused, idle]
+        active_action:
+          type: string
+          nullable: true
+          description: ID of the currently running action
+        pending:
+          type: integer
+          description: Number of pending actions
+        total:
+          type: integer
+          description: Total actions in the graph
+      required: [state, pending, total]
+
+    HealthResponse:
+      type: object
+      properties:
+        version:
+          type: string
+          example: "2.0.0"
+        uptime:
+          type: integer
+          description: Server uptime in seconds
+        actions:
+          type: object
+          properties:
+            total:
+              type: integer
+            inactive:
+              type: integer
+            pending:
+              type: integer
+            running:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+            skipped:
+              type: integer
+            waiting:
+              type: integer
+      required: [version, uptime, actions]
+
+    NixConfig:
+      type: object
+      properties:
+        enable:
+          type: boolean
+          description: Set false to disable nix even if flake.nix exists
+        flake:
+          oneOf:
+            - type: boolean
+            - type: string
+          description: "true = repo root flake, string = path to flake"
+        packages:
+          type: array
+          items:
+            type: string
+          description: Nixpkgs for nix shell -p
+
+    GitConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        snapshot_before:
+          type: string
+          description: Action type name to snapshot before
+        commit_after:
+          type: string
+          description: Action type name to commit after
+        commit_message:
+          type: string
+          description: Commit message template with {task_id} etc.
+
+    ScopeConfig:
+      type: object
+      properties:
+        writable:
+          type: array
+          items:
+            type: string
+          description: Glob patterns for writable paths
+          example: ["src/**", "tests/**"]
+        readable:
+          type: array
+          items:
+            type: string
+          description: Glob patterns for readable paths
+          example: ["**"]
+
+    ProjectConfig:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "my-project"
+        project_dir:
+          type: string
+          description: Absolute path to the project directory
+          example: "/home/user/projects/my-project"
+        model:
+          type: string
+          description: Default Claude model for agent actions
+          example: "opus"
+        nix:
+          $ref: "#/components/schemas/NixConfig"
+        git:
+          $ref: "#/components/schemas/GitConfig"
+        scope:
+          $ref: "#/components/schemas/ScopeConfig"
+        defaults:
+          type: object
+          properties:
+            types:
+              type: object
+              additionalProperties:
+                $ref: "#/components/schemas/ActionTypeDefaults"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, project_dir, created_at, updated_at]
+
+    V2TaskConfig:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "auth"
+        prompt:
+          type: string
+          description: Task description / agent prompt
+        actions:
+          type: array
+          items:
+            type: string
+          description: Action types for this task (references defaults.types keys)
+          example: ["develop", "eval", "deploy", "qa"]
+        depends_on:
+          type: array
+          items:
+            type: string
+          description: Task IDs this task depends on
+        tags:
+          type: array
+          items:
+            type: string
+          description: Custom tags applied to all actions in this task
+        budget:
+          type: object
+          properties:
+            max_iterations:
+              type: integer
+            max_cost:
+              type: number
+              format: double
+        variables:
+          type: object
+          additionalProperties: true
+      required: [id, prompt, actions]
+
+    OrcaV2Config:
+      type: object
+      description: YAML config format for importing tasks into the graph
+      properties:
+        name:
+          type: string
+          description: Project name (becomes the project ID)
+          example: "my-project"
+        project_dir:
+          type: string
+          description: Path to the project directory
+          example: "."
+        model:
+          type: string
+          example: "opus"
+        nix:
+          $ref: "#/components/schemas/NixConfig"
+        git:
+          $ref: "#/components/schemas/GitConfig"
+        scope:
+          $ref: "#/components/schemas/ScopeConfig"
+        defaults:
+          type: object
+          properties:
+            types:
+              type: object
+              additionalProperties:
+                $ref: "#/components/schemas/ActionTypeDefaults"
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/V2TaskConfig"
+      required: [name, tasks]
+
+    SSEEvent:
+      description: >
+        Server-Sent Event payload. The `event` field in the SSE stream
+        determines the type. All data payloads are JSON.
+      oneOf:
+        - type: object
+          title: action_started
+          properties:
+            action_id:
+              type: string
+            type:
+              $ref: "#/components/schemas/ActionType"
+          required: [action_id, type]
+        - type: object
+          title: action_completed
+          properties:
+            action_id:
+              type: string
+            condition:
+              $ref: "#/components/schemas/EdgeCondition"
+            cost_usd:
+              type: number
+              format: double
+          required: [action_id, condition, cost_usd]
+        - type: object
+          title: action_waiting
+          properties:
+            action_id:
+              type: string
+          required: [action_id]
+        - type: object
+          title: edge_traversed
+          properties:
+            from:
+              type: string
+            to:
+              type: string
+            condition:
+              $ref: "#/components/schemas/EdgeCondition"
+          required: [from, to, condition]
+        - type: object
+          title: executor_state
+          properties:
+            state:
+              type: string
+              enum: [running, paused, idle]
+            pending_count:
+              type: integer
+          required: [state, pending_count]
+        - type: object
+          title: connected
+          properties:
+            timestamp:
+              type: string
+              format: date-time
+            action_id:
+              type: string
+              description: Present only on per-action streams
+          required: [timestamp]

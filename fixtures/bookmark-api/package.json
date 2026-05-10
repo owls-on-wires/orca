@@ -1,0 +1,13 @@
+{
+  "name": "bookmark-api",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "dev": "bun run src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/bun": "latest"
+  }
+}

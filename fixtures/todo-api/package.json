@@ -1,0 +1,8 @@
+{
+  "name": "todo-api",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "dev": "bun run src/server.ts"
+  }
+}

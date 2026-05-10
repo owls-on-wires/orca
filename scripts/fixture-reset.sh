@@ -1,29 +1,51 @@
 #!/bin/bash
-# Reset a fixture project's git repo to its initial state.
+# Reset a fixture project to its initial state.
+# Creates a fresh git repo from the committed files each time.
 # Usage: bash scripts/fixture-reset.sh [fixture-name]
 # Default: calculator
 
 set -e
 
 FIXTURE="${1:-calculator}"
-FIXTURE_DIR="$(cd "$(dirname "$0")/.." && pwd)/fixtures/$FIXTURE"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAIN_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+FIXTURE_DIR="$MAIN_REPO/fixtures/$FIXTURE"
 
-if [ ! -d "$FIXTURE_DIR/.git" ]; then
-  echo "Error: $FIXTURE_DIR is not a git repo"
+if [ ! -d "$FIXTURE_DIR" ]; then
+  echo "Error: Fixture not found: $FIXTURE_DIR"
   exit 1
 fi
-
-cd "$FIXTURE_DIR"
 
 echo "Resetting fixture: $FIXTURE"
 echo "  Directory: $FIXTURE_DIR"
 
-git checkout -- .
-git clean -fd -e .orca/ 2>/dev/null
+cd "$FIXTURE_DIR"
 
-echo "  Git reset to initial state"
+# Remove any existing git repo
+rm -rf .git
 
+# Remove agent-generated files by clearing everything except
+# node_modules and .orca, then restoring originals from main repo
+find . -not -path './.orca/*' -not -path './node_modules/*' \
+  -not -name '.' -type f -delete 2>/dev/null || true
+find . -not -path './.orca/*' -not -path './node_modules/*' \
+  -type d -empty -delete 2>/dev/null || true
+
+# Restore original scaffold files from main repo
+cd "$MAIN_REPO"
+git checkout HEAD -- "fixtures/$FIXTURE/" 2>/dev/null || true
+cd "$FIXTURE_DIR"
+
+# Init fresh git repo
+git init -q
+git add -A
+git commit -q -m "initial"
+
+echo "  Git initialized from scaffold"
+
+# Install deps if needed
 if command -v bun &>/dev/null && [ -f "package.json" ]; then
+  bun install --silent 2>/dev/null || true
   echo "  Test status:"
   bun test 2>&1 | tail -3
 fi
