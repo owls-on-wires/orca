@@ -777,16 +777,58 @@ function handleHealth(
   return json(buildStats(state));
 }
 
-// GET / — placeholder (dashboard served by separate web package)
+// Serve documentation files from the docs/ directory or schemas/
+function serveDocs(docPath: string): Response {
+  const { readFileSync, existsSync } = require("fs") as typeof import("fs");
+  const { join, resolve, extname } = require("path") as typeof import("path");
+
+  // Prevent path traversal
+  if (docPath.includes("..")) {
+    return jsonError("Invalid path", 400);
+  }
+
+  // openapi.yaml is served from schemas/
+  let filePath: string;
+  if (docPath === "openapi.yaml") {
+    filePath = resolve(join(__dirname, "../../../../schemas/v2-api.openapi.yaml"));
+  } else {
+    filePath = resolve(join(__dirname, "docs", docPath));
+  }
+
+  if (!existsSync(filePath)) {
+    return jsonError("Not found", 404);
+  }
+
+  const content = readFileSync(filePath, "utf8");
+  const ext = extname(filePath);
+  const contentType =
+    ext === ".yaml" || ext === ".yml" ? "text/yaml" :
+    ext === ".md" ? "text/markdown" :
+    ext === ".txt" ? "text/plain" :
+    ext === ".json" ? "application/json" :
+    "text/plain";
+
+  return new Response(content, {
+    headers: { "Content-Type": `${contentType}; charset=utf-8`, ...CORS_HEADERS },
+  });
+}
+
+// GET / — discovery document
 function handleRoot(): Response {
-  return new Response(
-    `<html><body style="background:#0d1117;color:#e6edf3;font-family:monospace;padding:40px">
-      <h1>Orca v2 API</h1>
-      <p>API is running. Dashboard is served separately.</p>
-      <p><a href="/health" style="color:#58a6ff">/health</a></p>
-    </body></html>`,
-    { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS } },
-  );
+  return json({
+    name: "orca",
+    version: "2.0.0",
+    docs: {
+      llms: "/docs/llms.txt",
+      openapi: "/docs/openapi.yaml",
+      guides: {
+        "dynamic-tasking": "/docs/guides/dynamic-tasking.md",
+        templates: "/docs/guides/templates.md",
+        supervisor: "/docs/guides/supervisor.md",
+        "config-format": "/docs/guides/config-format.md",
+      },
+    },
+  });
 }
 
 // GET /events — global SSE stream
@@ -992,6 +1034,17 @@ export function startServer(options: ServerOptions = {}) {
       // Root
       if (path === "/" && req.method === "GET") {
         return handleRoot();
+      }
+
+      // /llms.txt shortcut
+      if (path === "/llms.txt" && req.method === "GET") {
+        return serveDocs("llms.txt");
+      }
+
+      // /docs/* — serve documentation files
+      if (path.startsWith("/docs/") && req.method === "GET") {
+        const docPath = path.slice(6); // remove "/docs/"
+        return serveDocs(docPath);
       }
 
       // Match routes

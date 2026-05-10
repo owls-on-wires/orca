@@ -1,0 +1,151 @@
+# Orca v2 API
+
+Orca is a build orchestrator that manages a graph of actions (agent tasks
+and commands) connected by conditional edges. Actions execute serially via
+a scheduler. The graph can be read and modified at runtime through this
+REST API.
+
+## Base URL
+http://localhost:7072
+
+## Authentication
+None required.
+
+## Quick Reference
+
+### Actions
+POST   /actions                Create an action
+                               Body: { id, type, project_id, status?, params?, tags? }
+                               type: "agent" | "command"
+                               Returns 201. Returns 409 if id exists.
+
+GET    /actions                List actions
+                               Query: ?tag=, ?status=, ?type=
+
+GET    /actions/:id            Get action detail (includes edges and history)
+
+PATCH  /actions/:id            Update action fields
+                               Body: { params?, tags?, status? }
+
+DELETE /actions/:id            Delete action (cascades edges and history)
+
+POST   /actions/:id/retry      Reset action to pending (increments iteration)
+POST   /actions/:id/skip       Mark action as skipped
+POST   /actions/:id/respond    Complete a waiting action
+                               Body: { status, summary, notes? }
+
+### Groups (template expansion)
+POST   /groups                 Create a full task chain from a template
+                               Body: { id, template, project_id,
+                                       prompt?, after?, depends_on?,
+                                       overrides?, tags?, budget? }
+                               Reads templates from project.orca.yaml on disk.
+                               Creates all actions + intra-task edges.
+                               Wires pass edge from "after" to first action.
+                               Returns 201 with { actions: [], edges: number }.
+
+### Edges
+POST   /edges                  Create an edge
+                               Body: { from_action, to_action, condition }
+                               condition: pass|fail|error|stuck|timeout|
+                                          cost_exceeded|max_turns
+
+DELETE /edges/:id              Delete an edge
+
+### Import
+POST   /import                 Import a full YAML config
+                               Body: { dir: "path" } or { yaml: "string" }
+                               Creates project, actions, and edges.
+
+POST   /reimport               Re-import specific tasks from a config
+                               Body: { dir/yaml, tasks: ["task-id", ...] }
+                               Replaces specified tasks, preserves others.
+
+### Executor
+POST   /executor/pause         Pause the scheduler
+POST   /executor/resume        Resume the scheduler
+GET    /executor/status        Get scheduler state, active action, counts
+
+### Events (SSE)
+GET    /events                 Global SSE stream
+                               Events: connected, action_started,
+                               action_completed, action_waiting,
+                               edge_traversed, executor_state, stats,
+                               tool_use, unhandled_failure
+
+GET    /actions/:id/events     Per-action SSE stream (filtered)
+GET    /actions/:id/logs       Get JSONL tool call log entries for an action
+
+### System
+GET    /health                 Health check with stats
+GET    /                       Discovery document (Accept: application/json)
+                               or HTML dashboard link
+
+## Key Concepts
+
+**Action**: A unit of work. Type is "agent" (LLM) or "command" (shell).
+Has status (inactive/pending/running/completed/failed/waiting/skipped),
+params, output, iteration count, cost. Agent actions need a prompt in
+params. Command actions need a command in params.
+
+**Edge**: A conditional connection. When an action completes with a
+condition (pass/fail/error/etc), the executor follows matching edges
+to activate the next action. An action can have edges to different
+targets for different conditions.
+
+**Group**: A task chain created from a template via POST /groups.
+One API call creates multiple actions with proper edges. Example:
+a "tdd" template creates write-tests → develop → eval with
+fail-back edges from eval to develop.
+
+**Template**: Defined in project.orca.yaml. Specifies action types,
+edges, and default params for a reusable task pattern. Templates
+are read from disk when POST /groups is called.
+
+**Supervisor**: An action tagged "type:supervisor". When any action
+fails with no matching outgoing edge, the executor automatically
+activates the supervisor with failure context in its params
+(failed_action, failed_condition, failed_output).
+
+**Project**: A record with id, project_dir, model, scope. Created
+by POST /import. Required for project_id on actions.
+
+## Edge Conditions
+
+- pass: action completed successfully (status: "passed")
+- fail: action explicitly failed (status: "failed")
+- error: malformed/unexpected output (status: "unknown" or missing)
+- stuck: same output repeated 3 times
+- timeout: action timed out
+- cost_exceeded: budget exceeded
+- max_turns: agent hit max turn limit
+
+Default edges (from config expansion): pass → next action, all
+failure conditions → first action in task. Self-loops are skipped.
+
+## Common Patterns
+
+Create a task chain:
+  curl -X POST /groups -d '{"id":"auth","template":"tdd","project_id":"my-proj","prompt":"Build auth"}'
+
+Wire tasks in sequence:
+  curl -X POST /groups -d '{"id":"api","template":"tdd","project_id":"p","prompt":"Build API","after":"auth.eval"}'
+
+Check graph state:
+  curl /actions | jq '[.[] | {id, status}]'
+
+Activate an action:
+  curl -X PATCH /actions/my.action -d '{"status":"pending"}'
+
+Retry a failed action:
+  curl -X POST /actions/my.action/retry
+
+## Guides
+For detailed documentation on specific topics:
+- Dynamic tasking: /docs/guides/dynamic-tasking.md
+- Templates: /docs/guides/templates.md
+- Supervisor & recovery: /docs/guides/supervisor.md
+- Config format: /docs/guides/config-format.md
+
+## Full OpenAPI Spec
+/docs/openapi.yaml

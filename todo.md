@@ -24,7 +24,7 @@
 - [x] Handle "unknown" agent output gracefully — unknown/missing status from agent output now classifies as `error` condition (not `fail`). `fail` = agent explicitly reported failure; `error` = malformed/unexpected output.
 - [x] Default fail/error edges for dynamically-created actions + Global fallback supervisor — when an action completes with a non-pass condition and has no matching outgoing edge, the executor looks for an action tagged `type:supervisor` in the same project and activates it with failure context (`failed_action`, `failed_condition`, `failed_output` injected into params). If no supervisor exists, fires `onUnhandledFailure` callback (SSE `unhandled_failure` event). Pass conditions with no edges do NOT escalate. Supervisor can be re-activated on subsequent failures. Escalation is recorded in action history.
 
-## API Docs and Agent Self-Discovery
+## API Docs and Agent Self-Discovery — DONE
 
 How it works:
 

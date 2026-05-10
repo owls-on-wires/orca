@@ -441,12 +441,62 @@ describe("v2 server", () => {
     expect(body.actions.total).toBeDefined();
   });
 
-  // ── Root ──
+  // ── Root + Discovery ──
 
-  it("GET / returns HTML", async () => {
+  it("GET / returns discovery JSON", async () => {
     const res = await fetch(url("/"));
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.json();
+    expect(body.name).toBe("orca");
+    expect(body.version).toBe("2.0.0");
+    expect(body.docs.llms).toBe("/docs/llms.txt");
+    expect(body.docs.openapi).toBe("/docs/openapi.yaml");
+    expect(body.docs.guides["dynamic-tasking"]).toBeDefined();
+  });
+
+  // ── Docs ──
+
+  it("GET /llms.txt returns the LLM reference", async () => {
+    const res = await fetch(url("/llms.txt"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const text = await res.text();
+    expect(text).toContain("Orca v2 API");
+    expect(text).toContain("POST   /actions");
+  });
+
+  it("GET /docs/llms.txt returns the LLM reference", async () => {
+    const res = await fetch(url("/docs/llms.txt"));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("Orca v2 API");
+  });
+
+  it("GET /docs/guides/dynamic-tasking.md returns guide", async () => {
+    const res = await fetch(url("/docs/guides/dynamic-tasking.md"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/markdown");
+    const text = await res.text();
+    expect(text).toContain("POST /groups");
+  });
+
+  it("GET /docs/openapi.yaml returns the OpenAPI spec", async () => {
+    const res = await fetch(url("/docs/openapi.yaml"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/yaml");
+    const text = await res.text();
+    expect(text).toContain("openapi:");
+  });
+
+  it("GET /docs/nonexistent returns 404", async () => {
+    const { status } = await fetchJson("/docs/nonexistent.txt");
+    expect(status).toBe(404);
+  });
+
+  it("GET /docs/.. is rejected", async () => {
+    const { status } = await fetchJson("/docs/../../../etc/passwd");
+    // URL parser resolves ".." so this either hits 400 or 404
+    expect(status === 400 || status === 404).toBe(true);
   });
 
   // ── 404 ──
