@@ -6,46 +6,40 @@ scope:
   readable: ["**"]
 
 # ─────────────────────────────────────────────────────────
-# Link Board — Dynamic Tasking
+# Link Board — Dynamic Tasking with Sprint QA
 # ─────────────────────────────────────────────────────────
 #
 # Starts with a single planner action. The planner reads
-# EPICS.md, decomposes each epic into tasks, picks a
-# template pattern for each, and creates actions + edges
-# via the orca HTTP API.
+# EPICS.md, decomposes each epic into tasks via POST /groups,
+# adds a sprint QA after the epic, and chains the next planner.
 #
-# Flow:
-#   plan-epic-1 → [epic tasks] → plan-epic-2 → ...
+# Flow per epic:
+#   planner-N → [task groups] → sprint-qa-N → planner-N+1
+#
+# Templates define the task patterns. The planner picks
+# tdd, tdd-qa, or dev for each task based on its nature.
+#
+# A supervisor action catches unhandled failures.
+# A git-commit step runs after each eval pass.
 # ─────────────────────────────────────────────────────────
-
-# ── Templates ──
-# These define the action patterns the planner creates.
-# The planner reads these to know what actions, types,
-# edges, and prompts to produce for each task.
 
 templates:
 
-  # Full TDD: write tests first, then implement, then verify.
-  # Use for: data layer, models, utilities, internal modules.
+  # Full TDD: write tests first, then implement, then verify, then commit.
   tdd:
-    actions: [write-tests, develop, eval]
+    actions: [write-tests, develop, eval, commit]
     types:
       write-tests:
         type: agent
         max_turns: 40
         toolset: all
-        # Prompt: tell the agent what test file to create and
-        # what test cases to write. Be specific.
       develop:
         type: agent
         max_turns: 80
         toolset: all
-        # Prompt: tell the agent what to implement to pass the
-        # tests. Reference existing code and conventions.
       eval:
         type: command
         timeout: 30
-        # params.command: "bun test test/{task}.test.ts"
         edges:
           fail: develop
           stuck: develop
@@ -53,12 +47,15 @@ templates:
           timeout: develop
           cost_exceeded: develop
           max_turns: develop
+      commit:
+        type: command
+        params:
+          command: "git add -A && git commit -m \"feat: ${TASK_ID:-update}\" --allow-empty"
+          timeout: 10
 
-  # TDD + live QA: same as tdd, plus an agent that starts the
-  # server and tests endpoints with curl.
-  # Use for: HTTP endpoints, API routes, anything user-facing.
+  # TDD + live QA after commit.
   tdd-qa:
-    actions: [write-tests, develop, eval, qa]
+    actions: [write-tests, develop, eval, commit, qa]
     types:
       write-tests:
         type: agent
@@ -78,12 +75,15 @@ templates:
           timeout: develop
           cost_exceeded: develop
           max_turns: develop
+      commit:
+        type: command
+        params:
+          command: "git add -A && git commit -m \"feat: ${TASK_ID:-update}\" --allow-empty"
+          timeout: 10
       qa:
         type: agent
         max_turns: 30
         toolset: all
-        # Prompt: kill port 3458, start server, test with curl,
-        # kill server. Return passed/failed.
         edges:
           fail: develop
           stuck: develop
@@ -92,11 +92,9 @@ templates:
           cost_exceeded: develop
           max_turns: develop
 
-  # Simple develop + verify. No test-writing stage.
-  # Use for: config changes, package.json, simple refactors,
-  # non-functional changes.
+  # Simple develop + verify + commit. No test-writing.
   dev:
-    actions: [develop, eval]
+    actions: [develop, eval, commit]
     types:
       develop:
         type: agent
@@ -112,8 +110,13 @@ templates:
           timeout: develop
           cost_exceeded: develop
           max_turns: develop
+      commit:
+        type: command
+        params:
+          command: "git add -A && git commit -m \"chore: ${TASK_ID:-update}\" --allow-empty"
+          timeout: 10
 
-  # Planner: single agent action.
+  # Planner: single agent action. Prompt lives here.
   planner:
     actions: [plan]
     types:
@@ -121,152 +124,146 @@ templates:
         type: agent
         max_turns: 40
         toolset: all
+        params:
+          prompt: >
+            You are a build planner for "link-board" — a link-sharing
+            platform built with Bun and SQLite.
 
-# ── Tasks ──
+            ## Setup
+
+            The orca API is at http://localhost:7072.
+            Read http://localhost:7072/llms.txt for the full API reference.
+            Read EPICS.md for the list of epics to build.
+            Read the src/ directory to understand existing code.
+
+            ## Your job
+
+            1. Check the graph: curl -s http://localhost:7072/actions | jq '[.[] | {id, status}]'
+            2. Identify the FIRST uncompleted epic in EPICS.md.
+               (If actions for an epic exist and are completed, it's done.)
+            3. If the previous action's output indicates QA failures, add
+               fix tasks before starting new feature work.
+            4. Decompose the epic into 2-4 tasks. For each, pick a template:
+               - tdd: data layer, models, utilities
+               - tdd-qa: HTTP endpoints, user-facing API
+               - dev: config changes, package.json, simple refactors
+            5. Create each task via POST /groups:
+               curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
+                 -d '{"id":"task-name","template":"tdd","project_id":"link-board",
+                      "prompt":"Implement...","after":"previous.commit",
+                      "overrides":{"write-tests":{"prompt":"Write tests for..."},
+                                   "eval":{"command":"bun test test/task.test.ts"}}}'
+            6. After the last task, create a sprint QA:
+               curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
+                 -d '{"id":"sprint-qa-N","template":"sprint-qa","project_id":"link-board",
+                      "after":"last-task.commit"}'
+               (For tdd-qa tasks, use "after":"last-task.qa" instead)
+            7. Create the next planner:
+               curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
+                 -d '{"id":"plan-epic-N+1","template":"planner","project_id":"link-board"}'
+            8. Wire QA to next planner (both pass and fail):
+               curl -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
+                 -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"pass"}'
+               curl -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
+                 -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"fail"}'
+            9. Activate the first task:
+               curl -X PATCH http://localhost:7072/actions/first-task.write-tests \
+                 -H 'Content-Type: application/json' -d '{"status":"pending"}'
+            10. If ALL 5 epics are complete and QA has passed, report
+                status: passed. Do NOT create more tasks.
+
+            ## Prompt guidelines
+
+            write-tests: specify test file path, exact test cases, imports,
+            use beforeEach(() => resetDb()) for DB tests. Server tests
+            import "../src/server" (port 3458).
+
+            develop: specify files to create/modify, functions/endpoints,
+            tell agent to read src/ first for conventions.
+
+            qa (tdd-qa template): tell agent to kill port 3458, start server,
+            test with curl, kill when done. List specific requests and
+            expected responses.
+
+            eval: set command to "bun test test/{task}.test.ts" or "bun test".
+
+            ## Conventions
+
+            - Bun with bun:test, bun:sqlite. Server on port 3458.
+            - Auth: Bun.password.hash/verify, simple HMAC-SHA256 JWT.
+            - Action IDs: {task-name}.{stage}
+            - Always verify API calls succeed (check response).
+            - Each task group includes a commit step after eval.
+            - For sequential tasks within an epic, wire "after" to
+              the previous task's last action (commit or qa).
+
+  # Sprint QA: integration test after each epic.
+  sprint-qa:
+    actions: [qa]
+    types:
+      qa:
+        type: agent
+        max_turns: 30
+        toolset: all
+        params:
+          prompt: >
+            You are a QA engineer for the link-board project.
+
+            Start the server and run integration tests covering ALL
+            functionality built so far (not just the latest epic).
+
+            1. Kill any process on port 3458:
+               kill $(lsof -ti:3458 -sTCP:LISTEN) 2>/dev/null
+            2. Start server: bun run src/server.ts &
+            3. Wait 2 seconds, verify GET http://localhost:3458/health
+
+            Test every endpoint that should exist based on completed
+            epics. Use curl to make real HTTP requests. Verify:
+            - Correct status codes (200, 201, 400, 401, 404, 409)
+            - Response shapes (check key fields with jq)
+            - Auth enforcement (protected routes reject no-auth)
+            - Error handling (invalid input, missing resources)
+
+            Kill the server when done.
+
+            Report status: "passed" if everything works.
+            Report status: "failed" with detailed notes listing
+            every broken endpoint and the exact error.
+
+  # Supervisor: catches unhandled failures.
+  supervisor:
+    actions: [diagnose]
+    types:
+      diagnose:
+        type: agent
+        max_turns: 40
+        toolset: all
+        tags: ["type:supervisor"]
+        params:
+          prompt: >
+            An action has failed with no recovery edge.
+
+            The orca API is at http://localhost:7072.
+            Read http://localhost:7072/llms.txt for the API reference.
+
+            Check params.failed_action and params.failed_condition
+            for context about what failed.
+
+            Steps:
+            1. Read the failed action's detail and logs:
+               curl -s http://localhost:7072/actions/{failed_action} | jq .
+               curl -s http://localhost:7072/actions/{failed_action}/logs | jq .
+            2. Read the source code the action was working on.
+            3. Diagnose why it failed.
+            4. Fix the issue — update code, fix tests, etc.
+            5. Retry the action:
+               curl -X POST http://localhost:7072/actions/{failed_action}/retry
+
+            Report status: "passed" after fixing and retrying.
 
 tasks:
   - id: plan-epic-1
     template: planner
-    prompt: >
-      You are a build planner for "link-board" — a link-sharing platform
-      (like Hacker News) built with Bun and SQLite.
 
-      ## Your files
-
-      - EPICS.md — The 5 epics to build, in order.
-      - ORCA-API.yaml — The orca API schema. API is at http://localhost:7072.
-      - project.orca.yaml — Read the templates section to understand the
-        3 task patterns available: tdd, tdd-qa, dev.
-
-      ## Step by step
-
-      1. Read EPICS.md.
-      2. Read the templates in project.orca.yaml to understand the patterns.
-      3. Check the current graph:
-         curl -s http://localhost:7072/actions | jq '[.[] | {id, status}]'
-      4. Read the src/ directory to see what code exists already.
-      5. Identify the FIRST uncompleted epic.
-      6. Decompose it into 2-4 tasks. For each task, pick a template:
-         - tdd: data layer, models, utilities (write-tests → develop → eval)
-         - tdd-qa: HTTP endpoints, API routes (write-tests → develop → eval → qa)
-         - dev: config, package.json, simple changes (develop → eval)
-      7. Create actions and edges via the API (see below).
-      8. Activate the first task.
-      9. Create plan-epic-{N+1} and wire it after the last task.
-      10. If all epics are done, report status: passed.
-
-      ## Creating a "tdd" task
-
-      For a task called "auth-models" using the tdd pattern:
-
-      curl -s -X POST http://localhost:7072/actions -H 'Content-Type: application/json' \
-        -d '{"id":"auth-models.write-tests","type":"agent","status":"inactive",
-             "params":{"prompt":"Write test/auth-models.test.ts. Test: ...","max_turns":40,"toolset":"all"},
-             "tags":["task:auth-models","project:link-board","type:write-tests"]}'
-
-      curl -s -X POST http://localhost:7072/actions -H 'Content-Type: application/json' \
-        -d '{"id":"auth-models.develop","type":"agent","status":"inactive",
-             "params":{"prompt":"Implement src/auth.ts. Functions: ...","max_turns":80,"toolset":"all"},
-             "tags":["task:auth-models","project:link-board","type:develop"]}'
-
-      curl -s -X POST http://localhost:7072/actions -H 'Content-Type: application/json' \
-        -d '{"id":"auth-models.eval","type":"command","status":"inactive",
-             "params":{"command":"bun test test/auth-models.test.ts","timeout":30},
-             "tags":["task:auth-models","project:link-board","type:eval"]}'
-
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"auth-models.write-tests","to_action":"auth-models.develop","condition":"pass"}'
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"auth-models.develop","to_action":"auth-models.eval","condition":"pass"}'
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"auth-models.eval","to_action":"auth-models.develop","condition":"fail"}'
-
-      ## Creating a "tdd-qa" task
-
-      Same as tdd, plus a qa action after eval:
-
-      curl -s -X POST http://localhost:7072/actions -H 'Content-Type: application/json' \
-        -d '{"id":"auth-endpoints.qa","type":"agent","status":"inactive",
-             "params":{"prompt":"QA: kill port 3458, start server (bun run src/server.ts &), wait 2s, test with curl: ... Kill server when done. Return passed/failed.","max_turns":30,"toolset":"all"},
-             "tags":["task:auth-endpoints","project:link-board","type:qa"]}'
-
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"auth-endpoints.eval","to_action":"auth-endpoints.qa","condition":"pass"}'
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"auth-endpoints.qa","to_action":"auth-endpoints.develop","condition":"fail"}'
-
-      ## Creating a "dev" task
-
-      Just develop + eval, no write-tests:
-
-      curl -s -X POST http://localhost:7072/actions -H 'Content-Type: application/json' \
-        -d '{"id":"setup-deps.develop","type":"agent","status":"inactive",
-             "params":{"prompt":"Add bcrypt to package.json and run bun install","max_turns":40,"toolset":"all"},
-             "tags":["task:setup-deps","project:link-board","type:develop"]}'
-      curl -s -X POST http://localhost:7072/actions -H 'Content-Type: application/json' \
-        -d '{"id":"setup-deps.eval","type":"command","status":"inactive",
-             "params":{"command":"bun test","timeout":30},
-             "tags":["task:setup-deps","project:link-board","type:eval"]}'
-
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"setup-deps.develop","to_action":"setup-deps.eval","condition":"pass"}'
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"setup-deps.eval","to_action":"setup-deps.develop","condition":"fail"}'
-
-      ## Wiring dependencies between tasks
-
-      If task B depends on task A completing:
-
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"auth-models.eval","to_action":"auth-endpoints.write-tests","condition":"pass"}'
-
-      (Use the LAST action of the predecessor — .eval for tdd/dev, .qa for tdd-qa)
-
-      ## Activating the first task
-
-      curl -s -X PATCH http://localhost:7072/actions/auth-models.write-tests \
-        -H 'Content-Type: application/json' -d '{"status":"pending"}'
-
-      ## Creating the next planner
-
-      curl -s -X POST http://localhost:7072/actions -H 'Content-Type: application/json' \
-        -d '{"id":"plan-epic-{N+1}","type":"agent","status":"inactive",
-             "params":{"prompt":"<this entire prompt>"},
-             "tags":["type:planner","project:link-board"]}'
-
-      curl -s -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-        -d '{"from_action":"{last-task-terminal}","to_action":"plan-epic-{N+1}","condition":"pass"}'
-
-      ## Prompt-writing guidelines
-
-      write-tests prompts should specify:
-      - Exact test file path (test/{task}.test.ts)
-      - List of specific test cases to write
-      - What imports to use (bun:test, source modules)
-      - Use beforeEach(() => resetDb()) for DB tests
-      - Server endpoint tests: import "../src/server" to start on port 3458
-
-      develop prompts should specify:
-      - What file(s) to create or modify in src/
-      - Exact functions, types, or endpoints to implement
-      - Tell the agent to read existing src/ code first for conventions
-      - Reference what the tests expect
-
-      qa prompts should specify:
-      - Kill any process on port 3458: kill $(lsof -ti:3458 -sTCP:LISTEN) 2>/dev/null
-      - Start server: bun run src/server.ts &
-      - Wait 2 seconds, verify GET http://localhost:3458/health
-      - List specific curl requests to make and what to verify
-      - Kill server when done
-      - Return status: passed or failed with notes
-
-      ## Conventions
-
-      - Bun with bun:test for testing, bun:sqlite for database
-      - Server on port 3458
-      - For auth: Bun.password.hash/verify, simple HMAC-SHA256 JWT (no libraries)
-      - Action IDs: {task-name}.{stage} — e.g., auth-models.write-tests
-      - Always verify API calls succeed (check response for errors)
-
-    budget:
-      max_iterations: 3
+  - id: supervisor
+    template: supervisor
