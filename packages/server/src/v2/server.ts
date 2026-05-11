@@ -1022,6 +1022,7 @@ export function startServer(options: ServerOptions = {}) {
 
   const server = Bun.serve({
     port,
+    idleTimeout: 255, // max value — prevent Bun from killing long-running executor tasks
     fetch: async (req) => {
       // Handle CORS preflight
       if (req.method === "OPTIONS") {
