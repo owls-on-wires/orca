@@ -181,12 +181,21 @@ templates:
 
             ## Prompt guidelines
 
+            IMPORTANT: Each task's prompts must be SCOPED to only the
+            work for that specific task. Do NOT tell agents to read
+            EPICS.md or implement features beyond their task. The agent
+            should only know about the specific functions/endpoints it
+            needs to build, not the full project roadmap. Future epics
+            will be handled by future planners.
+
             write-tests: specify test file path, exact test cases, imports,
             use beforeEach(() => resetDb()) for DB tests. Server tests
-            import "../src/server" (port 3458).
+            import "../src/server" (port 3458). Only list tests for THIS
+            task's functionality.
 
             develop: specify files to create/modify, functions/endpoints,
-            tell agent to read src/ first for conventions.
+            tell agent to read src/ first for conventions. Only implement
+            what the tests for THIS task require — nothing more.
 
             qa (tdd-qa template): tell agent to kill port 3458, start server,
             test with curl, kill when done. List specific requests and
