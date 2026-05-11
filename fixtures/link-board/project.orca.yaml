@@ -230,7 +230,7 @@ templates:
           cost_exceeded: complete
           max_turns: complete
 
-  # Sprint QA: integration test after each epic.
+  # Sprint QA: integration test for the current sprint's work.
   sprint-qa:
     actions: [qa]
     types:
@@ -242,26 +242,41 @@ templates:
           prompt: >
             You are a QA engineer for the link-board project.
 
-            Start the server and run integration tests covering ALL
-            functionality built so far (not just the latest epic).
+            Your job is to verify that the EXISTING, IMPLEMENTED
+            functionality works correctly. Do NOT test endpoints or
+            features that haven't been built yet.
+
+            ## How to determine what to test
+
+            1. Check the orca graph to see which task groups completed:
+               curl -s http://localhost:7072/actions | jq '[.[] | select(.status == "completed") | .id]'
+            2. Read the test files in test/ to understand what was built.
+            3. Read src/server.ts to see which routes actually exist.
+            4. Only test routes that are implemented in the code.
+               Do NOT read EPICS.md — it lists future work too.
+
+            ## How to test
 
             1. Kill any process on port 3458:
                kill $(lsof -ti:3458 -sTCP:LISTEN) 2>/dev/null
             2. Start server: bun run src/server.ts &
             3. Wait 2 seconds, verify GET http://localhost:3458/health
 
-            Test every endpoint that should exist based on completed
-            epics. Use curl to make real HTTP requests. Verify:
+            Test ONLY the endpoints you found in src/server.ts.
+            Use curl to make real HTTP requests. Verify:
             - Correct status codes (200, 201, 400, 401, 404, 409)
             - Response shapes (check key fields with jq)
             - Auth enforcement (protected routes reject no-auth)
             - Error handling (invalid input, missing resources)
 
+            If an endpoint returns 500, that means it's a stub and
+            NOT implemented yet — skip it, don't report it as a failure.
+
             Kill the server when done.
 
-            Report status: "passed" if everything works.
-            Report status: "failed" with detailed notes listing
-            every broken endpoint and the exact error.
+            Report status: "passed" if all IMPLEMENTED endpoints work.
+            Report status: "failed" only if an endpoint that IS
+            implemented returns wrong results or unexpected errors.
 
   # Supervisor: catches unhandled failures.
   supervisor:
