@@ -198,9 +198,9 @@ templates:
             - For sequential tasks within an epic, wire "after" to
               the previous task's last action (commit or qa).
 
-  # Sprint QA: integration test after each epic.
+  # Sprint QA: integration test after each epic, then notify.
   sprint-qa:
-    actions: [qa]
+    actions: [qa, notify]
     types:
       qa:
         type: agent
@@ -230,6 +230,11 @@ templates:
             Report status: "passed" if everything works.
             Report status: "failed" with detailed notes listing
             every broken endpoint and the exact error.
+      notify:
+        type: command
+        params:
+          command: "curl -sf -d \"Sprint QA complete for link-board\" ntfy.sh/orca-builds || true"
+          timeout: 10
 
   # Supervisor: catches unhandled failures.
   supervisor:

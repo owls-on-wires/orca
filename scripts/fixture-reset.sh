@@ -21,20 +21,32 @@ echo "  Directory: $FIXTURE_DIR"
 
 cd "$FIXTURE_DIR"
 
-# Remove any existing git repo
+# Remove existing git repo
 rm -rf .git
 
-# Remove agent-generated files by clearing everything except
-# node_modules and .orca, then restoring originals from main repo
-find . -not -path './.orca/*' -not -path './node_modules/*' \
-  -not -name '.' -type f -delete 2>/dev/null || true
-find . -not -path './.orca/*' -not -path './node_modules/*' \
-  -type d -empty -delete 2>/dev/null || true
+# Nuke everything except node_modules and .orca
+# (these are gitignored and persist across resets)
+for item in *; do
+  [ "$item" = "node_modules" ] && continue
+  rm -rf "$item"
+done
+# Also remove hidden files/dirs (except . .. .orca node_modules)
+for item in .[!.]*; do
+  [ "$item" = ".orca" ] && continue
+  rm -rf "$item"
+done
 
 # Restore original scaffold files from main repo
 cd "$MAIN_REPO"
-git checkout HEAD -- "fixtures/$FIXTURE/" 2>/dev/null || true
+git checkout HEAD -- "fixtures/$FIXTURE/"
 cd "$FIXTURE_DIR"
+
+# Verify cleanup
+remaining=$(find . -not -path './.orca/*' -not -path './node_modules/*' -not -name '.' -type f | head -20)
+if [ -n "$remaining" ]; then
+  echo "  Restored files:"
+  echo "$remaining" | sed 's/^/    /'
+fi
 
 # Init fresh git repo
 git init -q
