@@ -157,23 +157,26 @@ templates:
                       "prompt":"Implement...","after":"plan-epic-N.plan",
                       "overrides":{"write-tests":{"prompt":"Write tests for..."},
                                    "eval":{"command":"bun test test/task.test.ts"}}}'
-            6. After the last task, create a sprint QA:
+            6. After the last task, create a notify + sprint QA + next planner:
+               a) Notify (after last task's terminal action):
                curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
-                 -d '{"id":"sprint-qa-N","template":"sprint-qa","project_id":"link-board",
+                 -d '{"id":"notify-N","template":"notify","project_id":"link-board",
                       "after":"last-task.commit"}'
                (For tdd-qa tasks, use "after":"last-task.qa" instead)
-            7. Create the next planner:
+               b) Sprint QA (after notify):
+               curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
+                 -d '{"id":"sprint-qa-N","template":"sprint-qa","project_id":"link-board",
+                      "after":"notify-N.send"}'
+               c) Next planner:
                curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
                  -d '{"id":"plan-epic-N+1","template":"planner","project_id":"link-board"}'
-            8. Wire sprint-qa to next planner. Use the LAST action
-               returned by POST /groups for the sprint-qa (e.g.
-               sprint-qa-N.notify, NOT .qa). Wire both pass and fail:
+            7. Wire sprint-qa to next planner (both pass and fail,
+               so planner always runs and can plan fixes if QA failed):
                curl -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-                 -d '{"from_action":"sprint-qa-N.notify","to_action":"plan-epic-N+1.plan","condition":"pass"}'
-               Wire fail from .qa directly (notify only runs on pass):
+                 -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"pass"}'
                curl -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
                  -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"fail"}'
-            9. If ALL 5 epics are complete and QA has passed, report
+            8. If ALL 5 epics are complete and QA has passed, report
                 status: passed. Do NOT create more tasks.
 
             ## Prompt guidelines
@@ -201,9 +204,26 @@ templates:
             - For sequential tasks within an epic, wire "after" to
               the previous task's last action (commit or qa).
 
-  # Sprint QA: integration test after each epic, then notify.
+  # Notify: fire-and-forget ntfy push. Placed between last task and sprint QA.
+  notify:
+    actions: [send]
+    types:
+      send:
+        type: command
+        params:
+          command: "curl -sf -d \"Sprint tasks complete for link-board\" ntfy.sh/orca-builds || true"
+          timeout: 10
+        edges:
+          fail: complete
+          error: complete
+          stuck: complete
+          timeout: complete
+          cost_exceeded: complete
+          max_turns: complete
+
+  # Sprint QA: integration test after each epic.
   sprint-qa:
-    actions: [qa, notify]
+    actions: [qa]
     types:
       qa:
         type: agent
@@ -233,18 +253,6 @@ templates:
             Report status: "passed" if everything works.
             Report status: "failed" with detailed notes listing
             every broken endpoint and the exact error.
-      notify:
-        type: command
-        params:
-          command: "curl -sf -d \"Sprint QA complete for link-board\" ntfy.sh/orca-builds || true"
-          timeout: 10
-        edges:
-          fail: complete
-          error: complete
-          stuck: complete
-          timeout: complete
-          cost_exceeded: complete
-          max_turns: complete
 
   # Supervisor: catches unhandled failures.
   supervisor:
