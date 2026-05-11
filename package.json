@@ -17,5 +17,8 @@
   },
   "devDependencies": {
     "playwright": "^1.59.1"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.138"
   }
 }
