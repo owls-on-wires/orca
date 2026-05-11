@@ -165,9 +165,12 @@ templates:
             7. Create the next planner:
                curl -X POST http://localhost:7072/groups -H 'Content-Type: application/json' \
                  -d '{"id":"plan-epic-N+1","template":"planner","project_id":"link-board"}'
-            8. Wire QA to next planner (both pass and fail):
+            8. Wire sprint-qa to next planner. Use the LAST action
+               returned by POST /groups for the sprint-qa (e.g.
+               sprint-qa-N.notify, NOT .qa). Wire both pass and fail:
                curl -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
-                 -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"pass"}'
+                 -d '{"from_action":"sprint-qa-N.notify","to_action":"plan-epic-N+1.plan","condition":"pass"}'
+               Wire fail from .qa directly (notify only runs on pass):
                curl -X POST http://localhost:7072/edges -H 'Content-Type: application/json' \
                  -d '{"from_action":"sprint-qa-N.qa","to_action":"plan-epic-N+1.plan","condition":"fail"}'
             9. If ALL 5 epics are complete and QA has passed, report
