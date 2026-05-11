@@ -3,8 +3,9 @@
  */
 
 import { resolve } from "path";
+import { readFileSync, existsSync } from "fs";
 import { invokeSimple } from "../engine/invoke";
-import type { InvokeResult } from "../engine/invoke";
+import type { InvokeResult, InvokeOptions } from "../engine/invoke";
 import { applyVars } from "../templates";
 import { buildNixCommand } from "../nix";
 import type { ScopeConfig, Toolset } from "../config/schema";
@@ -88,6 +89,103 @@ export function buildPredecessorPrompt(predecessors: PredecessorOutput[]): strin
 }
 
 // ---------------------------------------------------------------------------
+// Watchdog: recovers from SDK generator hangs by reading JSONL log
+// ---------------------------------------------------------------------------
+
+const WATCHDOG_POLL_INTERVAL = 5000;  // check log every 5 seconds
+const WATCHDOG_GRACE_PERIOD = 15000;  // wait 15s after invoke_end before force-resolving
+
+async function invokeWithWatchdog(
+  options: InvokeOptions,
+  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void,
+): Promise<InvokeResult> {
+  const logPath = options.logPath;
+
+  // If no log path, can't watchdog — fall back to direct call
+  if (!logPath) {
+    return invokeSimple(options, onToolUse);
+  }
+
+  // Count existing invoke_end entries so we only detect NEW ones
+  let existingEnds = 0;
+  if (existsSync(logPath)) {
+    const content = readFileSync(logPath, "utf8");
+    existingEnds = content.split("\n").filter(l => l.includes('"invoke_end"')).length;
+  }
+
+  return new Promise<InvokeResult>((resolveOuter) => {
+    let resolved = false;
+    let watchdogInterval: ReturnType<typeof setInterval> | null = null;
+    let graceTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    function cleanup() {
+      if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
+      if (graceTimeout) { clearTimeout(graceTimeout); graceTimeout = null; }
+    }
+
+    function finish(result: InvokeResult) {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolveOuter(result);
+    }
+
+    // Start the real invoke
+    invokeSimple(options, onToolUse).then(
+      (result) => finish(result),
+      (err) => {
+        // On error, resolve with error result rather than rejecting
+        finish({
+          output: null,
+          costUsd: 0,
+          sessionId: null,
+          numTurns: 0,
+          durationMs: 0,
+          isError: true,
+        });
+      },
+    );
+
+    // Watchdog: poll the JSONL log for a new invoke_end
+    watchdogInterval = setInterval(() => {
+      if (resolved) { cleanup(); return; }
+      if (!existsSync(logPath)) return;
+
+      try {
+        const content = readFileSync(logPath, "utf8");
+        const lines = content.trim().split("\n").filter(Boolean);
+        const endLines = lines.filter(l => l.includes('"invoke_end"'));
+
+        // Only trigger on NEW invoke_end entries
+        if (endLines.length <= existingEnds) return;
+
+        // Found a new invoke_end — start grace period
+        const lastEnd = JSON.parse(endLines[endLines.length - 1]);
+
+        if (!graceTimeout) {
+          graceTimeout = setTimeout(() => {
+            if (resolved) return;
+            // Grace period expired — invokeSimple didn't resolve. Force-resolve from log.
+            const result: InvokeResult = {
+              output: lastEnd.structured_output ?? null,
+              costUsd: lastEnd.cost_usd ?? 0,
+              sessionId: lastEnd.session_id ?? null,
+              numTurns: lastEnd.num_turns ?? 0,
+              durationMs: lastEnd.duration_ms ?? 0,
+              isError: lastEnd.is_error ?? false,
+            };
+            console.log(`[watchdog] Force-resolving ${options.label} from JSONL (SDK generator hung)`);
+            finish(result);
+          }, WATCHDOG_GRACE_PERIOD);
+        }
+      } catch {
+        // Ignore read errors — file might be mid-write
+      }
+    }, WATCHDOG_POLL_INTERVAL);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Agent action
 // ---------------------------------------------------------------------------
 
@@ -113,7 +211,7 @@ async function runAgentAction(
 
   const fullPrompt = parts.join("\n\n");
 
-  const result = await invokeSimple({
+  const result = await invokeWithWatchdog({
     prompt: fullPrompt,
     projectDir: resolve(options.projectDir),
     model: options.model,
