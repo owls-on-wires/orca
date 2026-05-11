@@ -35,6 +35,7 @@ export interface RunOptions {
   nix?: NixConfig;
   logPath?: string;
   onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
+  abortController?: AbortController;
 }
 
 export interface PredecessorOutput {
@@ -222,6 +223,7 @@ async function runAgentAction(
     logPath: options.logPath,
     systemPrompt,
     label: action.id,
+    abortController: options.abortController,
   }, options.onToolUse);
 
   // Always extract cost/turns/duration regardless of subtype

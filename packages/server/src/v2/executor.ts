@@ -146,6 +146,10 @@ export class Executor {
       const logDir = projectDir + "/.orca/logs";
       const logPath = logDir + "/" + runningAction.id + ".jsonl";
 
+      // Wall-clock timeout: configurable per action, default 10 minutes
+      const wallTimeout = (runningAction.params.wall_timeout as number | undefined) ?? 600;
+      const abortController = new AbortController();
+
       const runOptions: RunOptions = {
         projectDir,
         model: project?.model ?? this.options.model,
@@ -155,9 +159,48 @@ export class Executor {
         onToolUse: this.options.onToolUse
           ? (name, input) => this.options.onToolUse!(runningAction, name, input)
           : undefined,
+        abortController,
       };
 
-      const result = await this.runActionFn(runningAction, predecessorOutputs, runOptions);
+      const WALL_TIMEOUT_SENTINEL = Symbol("wall_timeout");
+      const timeoutPromise = new Promise<typeof WALL_TIMEOUT_SENTINEL>((resolve) => {
+        setTimeout(() => {
+          abortController.abort();
+          resolve(WALL_TIMEOUT_SENTINEL);
+        }, wallTimeout * 1000);
+      });
+
+      const raceResult = await Promise.race([
+        this.runActionFn(runningAction, predecessorOutputs, runOptions)
+          .catch(() => WALL_TIMEOUT_SENTINEL), // if abort causes rejection, treat as timeout
+        timeoutPromise,
+      ]);
+
+      if (raceResult === WALL_TIMEOUT_SENTINEL) {
+        // Wall-clock timeout — classify as timeout condition
+        const now = new Date().toISOString();
+        this.db.updateAction(action.id, {
+          status: "failed",
+          output: { status: "timeout", summary: `Exceeded wall timeout (${wallTimeout}s)` },
+          completed_at: now,
+        });
+        this.db.appendHistory(action.id, "completed", {
+          condition: "timeout",
+          output_hash: hashOutput({ status: "timeout" }),
+        });
+        this.options.onActionEnd?.(this.db.getAction(action.id)!, {
+          condition: "timeout",
+          output: { status: "timeout", summary: `Exceeded wall timeout (${wallTimeout}s)` },
+          cost_usd: 0,
+          duration_ms: wallTimeout * 1000,
+          num_turns: 0,
+        });
+        this.lastCompletedAction = action.id;
+        this.followEdges(action, "timeout");
+        continue;
+      }
+
+      const result = raceResult as ActionResult | WaitingResult;
 
       // Step 7: WaitingResult
       if (isWaitingResult(result)) {

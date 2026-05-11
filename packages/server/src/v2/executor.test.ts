@@ -440,4 +440,73 @@ describe("executor", () => {
     expect(escalated).toBeDefined();
     expect((escalated!.data as any).supervisor_id).toBe("sup");
   });
+
+  // ── Wall-clock timeout ──
+
+  test("wall-clock timeout aborts action and follows timeout edges", async () => {
+    db.insertAction(createAction({
+      id: "slow",
+      status: "pending",
+      params: { wall_timeout: 0.1 }, // 100ms timeout
+    }));
+    db.insertAction(createAction({ id: "recovery", status: "inactive" }));
+    db.insertEdge(createEdge("slow", "recovery", "timeout"));
+
+    // Action that respects the abort signal
+    const run: RunActionFn = async (_action, _preds, opts) => {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(passResult()), 2000);
+        opts.abortController?.signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error("aborted"));
+        });
+      });
+    };
+
+    const executor = new Executor(db, makeOptions(run));
+    await executor.run();
+
+    const action = db.getAction("slow")!;
+    expect(action.status).toBe("failed");
+    expect(action.output!.status).toBe("timeout");
+    // Recovery was activated via timeout edge (may have already been run by executor)
+    const recovery = db.getAction("recovery")!;
+    expect(["pending", "completed"]).toContain(recovery.status);
+  });
+
+  test("wall-clock timeout escalates to supervisor when no timeout edge exists", async () => {
+    db.insertProject(createProject({ id: "p", project_dir: "/tmp" }));
+    db.insertAction(createAction({
+      id: "slow2",
+      status: "pending",
+      project_id: "p",
+      tags: ["project:p"],
+      params: { wall_timeout: 1 },
+    }));
+    db.insertAction(createAction({
+      id: "sup",
+      status: "inactive",
+      project_id: "p",
+      tags: ["type:supervisor", "project:p"],
+      params: { prompt: "fix it" },
+    }));
+
+    const run: RunActionFn = async (_action, _preds, opts) => {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(passResult()), 2000);
+        opts.abortController?.signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error("aborted"));
+        });
+      });
+    };
+
+    const executor = new Executor(db, makeOptions(run));
+    await executor.run();
+
+    expect(db.getAction("slow2")!.status).toBe("failed");
+    const sup = db.getAction("sup")!;
+    expect(sup.params.failed_action).toBe("slow2");
+    expect(sup.params.failed_condition).toBe("timeout");
+  });
 });

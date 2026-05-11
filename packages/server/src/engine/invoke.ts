@@ -30,6 +30,7 @@ export interface InvokeOptions {
   timeout?: number;
   label?: string;
   logPath?: string;
+  abortController?: AbortController;
 }
 
 export interface InvokeResult {
@@ -167,6 +168,7 @@ export async function* invoke(
     cwd: resolve(options.projectDir),
     outputFormat,
     settingSources: ["user", "project", "local"],
+    abortController: options.abortController,
   };
 
   log.write("invoke_start", {
