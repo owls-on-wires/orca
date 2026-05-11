@@ -103,14 +103,14 @@ const server = Bun.serve({
 
     // POST /links
     if (url.pathname === "/links" && req.method === "POST") {
-      const auth = requireNotBanned(req);
-      if (auth instanceof Response) return auth;
-
       const body = await req.json();
       const { title, url: linkUrl } = body;
       if (!title || !linkUrl) {
         return Response.json({ error: "Missing required fields" }, { status: 400 });
       }
+
+      const auth = requireNotBanned(req);
+      if (auth instanceof Response) return auth;
 
       const link = createLink({ title, url: linkUrl, userId: auth.userId });
       return Response.json({ link }, { status: 201 });
@@ -173,14 +173,14 @@ const server = Bun.serve({
 
     // POST /links/:id/comments
     if (linkCommentsMatch && req.method === "POST") {
-      const auth = requireNotBanned(req);
-      if (auth instanceof Response) return auth;
-
       const linkId = parseInt(linkCommentsMatch[1], 10);
       const body = await req.json();
       if (!body.body) {
         return Response.json({ error: "Missing required fields" }, { status: 400 });
       }
+
+      const auth = requireNotBanned(req);
+      if (auth instanceof Response) return auth;
 
       const comment = createComment({ body: body.body, userId: auth.userId, linkId, parentId: body.parent_id });
       return Response.json({ comment }, { status: 201 });
