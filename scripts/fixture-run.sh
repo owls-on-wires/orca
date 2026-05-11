@@ -1,33 +1,36 @@
 #!/bin/bash
-# Reset a fixture project, import it into the running API, and start the executor.
+# Copy a fixture to tmp/, import it into the running API, and start the executor.
 # Usage: bash scripts/fixture-run.sh [fixture-name]
 # Default: calculator
 #
-# Requires: API server running on :7072 (start with `bun run api:bg`)
+# Requires: API server running on :7072
 
 set -e
 
 FIXTURE="${1:-calculator}"
-FIXTURE_DIR="$(cd "$(dirname "$0")/.." && pwd)/fixtures/$FIXTURE"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAIN_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 API_URL="http://localhost:7072"
 
 if ! curl -sf "$API_URL/health" &>/dev/null; then
   echo "Error: API server not running on $API_URL"
-  echo "  Start it with: bun run api:bg"
+  echo "  Start it with: bun run packages/server/src/v2/server.ts --port 7072 --db ~/.orca/orca.db"
   exit 1
 fi
 
-if [ ! -d "$FIXTURE_DIR" ]; then
-  echo "Error: Fixture not found: $FIXTURE_DIR"
+if [ ! -d "$MAIN_REPO/fixtures/$FIXTURE" ]; then
+  echo "Error: Fixture not found: $MAIN_REPO/fixtures/$FIXTURE"
   exit 1
 fi
 
-echo "=== Resetting fixture: $FIXTURE ==="
-bash "$(dirname "$0")/fixture-reset.sh" "$FIXTURE"
+echo "=== Preparing fixture: $FIXTURE ==="
+# fixture-reset.sh outputs the working directory path on the last line
+WORK_DIR=$(bash "$SCRIPT_DIR/fixture-reset.sh" "$FIXTURE")
+echo "  Working directory: $WORK_DIR"
 
 echo ""
 echo "=== Clearing database ==="
-# Delete any existing actions from this project
+# Delete any existing actions
 EXISTING=$(curl -sf "$API_URL/actions" 2>/dev/null | jq -r '.[].id' 2>/dev/null || true)
 if [ -n "$EXISTING" ]; then
   echo "$EXISTING" | while read -r id; do
@@ -42,7 +45,7 @@ echo ""
 echo "=== Importing config ==="
 RESULT=$(curl -sf -X POST "$API_URL/import" \
   -H "Content-Type: application/json" \
-  -d "{\"dir\": \"$FIXTURE_DIR\"}")
+  -d "{\"dir\": \"$WORK_DIR\"}")
 
 ACTIONS=$(echo "$RESULT" | jq -r '.actions | length')
 EDGES=$(echo "$RESULT" | jq -r '.edges')
@@ -57,4 +60,5 @@ echo "=== Status ==="
 curl -sf "$API_URL/executor/status" | jq .
 
 echo ""
+echo "Working directory: $WORK_DIR"
 echo "Open http://localhost:8095 to watch the build."

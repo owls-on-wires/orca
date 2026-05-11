@@ -1,65 +1,52 @@
 #!/bin/bash
-# Reset a fixture project to its initial state.
-# Creates a fresh git repo from the committed files each time.
+# Prepare a fixture for execution by copying it to tmp/.
+# The fixtures/ directory is the immutable source of truth.
 # Usage: bash scripts/fixture-reset.sh [fixture-name]
 # Default: calculator
+#
+# Outputs the working directory path to stdout (last line).
 
 set -e
 
 FIXTURE="${1:-calculator}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-FIXTURE_DIR="$MAIN_REPO/fixtures/$FIXTURE"
+SOURCE_DIR="$MAIN_REPO/fixtures/$FIXTURE"
+WORK_DIR="$MAIN_REPO/tmp/fixtures/$FIXTURE"
 
-if [ ! -d "$FIXTURE_DIR" ]; then
-  echo "Error: Fixture not found: $FIXTURE_DIR"
+if [ ! -d "$SOURCE_DIR" ]; then
+  echo "Error: Fixture not found: $SOURCE_DIR" >&2
   exit 1
 fi
 
-echo "Resetting fixture: $FIXTURE"
-echo "  Directory: $FIXTURE_DIR"
+echo "Resetting fixture: $FIXTURE" >&2
+echo "  Source: $SOURCE_DIR" >&2
+echo "  Working copy: $WORK_DIR" >&2
 
-cd "$FIXTURE_DIR"
+# Clean any previous working copy
+rm -rf "$WORK_DIR"
 
-# Remove existing git repo
-rm -rf .git
+# Copy source to working directory
+mkdir -p "$(dirname "$WORK_DIR")"
+cp -r "$SOURCE_DIR" "$WORK_DIR"
 
-# Nuke everything except node_modules and .orca
-# (these are gitignored and persist across resets)
-for item in *; do
-  [ "$item" = "node_modules" ] && continue
-  rm -rf "$item"
-done
-# Also remove hidden files/dirs (except . .. .orca node_modules)
-for item in .[!.]*; do
-  [ "$item" = ".orca" ] && continue
-  rm -rf "$item"
-done
-
-# Restore original scaffold files from main repo
-cd "$MAIN_REPO"
-git checkout HEAD -- "fixtures/$FIXTURE/"
-cd "$FIXTURE_DIR"
-
-# Verify cleanup
-remaining=$(find . -not -path './.orca/*' -not -path './node_modules/*' -not -name '.' -type f | head -20)
-if [ -n "$remaining" ]; then
-  echo "  Restored files:"
-  echo "$remaining" | sed 's/^/    /'
-fi
+cd "$WORK_DIR"
 
 # Init fresh git repo
 git init -q
 git add -A
 git commit -q -m "initial"
 
-echo "  Git initialized from scaffold"
+echo "  Git initialized" >&2
 
 # Install deps if needed
 if command -v bun &>/dev/null && [ -f "package.json" ]; then
   bun install --silent 2>/dev/null || true
-  echo "  Test status:"
-  bun test 2>&1 | tail -3
+  echo "  Test status:" >&2
+  bun test 2>&1 | tail -3 >&2
 fi
 
-echo "Done."
+echo "Done." >&2
+
+# Output the working directory path (for fixture-run.sh to capture)
+echo "$WORK_DIR"
