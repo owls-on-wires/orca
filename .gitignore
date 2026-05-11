@@ -10,3 +10,5 @@ bin/orca*
 fixtures/*/.orca/
 fixtures/*/node_modules/
 fixtures/*/bun.lock
+*.db-wal
+*.db-shm
