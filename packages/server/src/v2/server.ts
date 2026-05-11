@@ -5,8 +5,7 @@
 
 import { OrcaDatabase } from "./db";
 import { expandConfig, reimportTasks, expandTask } from "./config";
-import { Executor, type ExecutorOptions } from "./executor";
-import { runAction } from "./action-runner";
+import { Executor } from "./executor";
 import {
   createAction,
   type ActionConfig,
@@ -605,22 +604,17 @@ async function handleRespond(
   let condition: string = "pass";
 
   if (state.executor) {
-    // Use executor to complete the action and follow edges
+    // Inline executor (test mode) — complete and follow edges directly
     condition = state.executor.completeWaitingAction(params.id, output);
-
-    // Signal the executor loop to wake up
-    if (state.executor.isIdle()) {
-      state.executorState = "running";
-      state.executor.resume();
-      kickExecutor(state);
-    }
   } else {
-    // No executor — just update DB directly
+    // Worker mode or no executor — update DB directly
     state.db.updateAction(params.id, {
       status: "completed",
       output,
       completed_at: new Date().toISOString(),
     });
+    // Kick worker to pick up the completed action
+    if (executorWorker) sendToWorker({ type: "kick" });
   }
 
   return json({ status: "completed", condition });
@@ -709,7 +703,11 @@ function handleExecutorPause(
   _req: Request,
   state: ServerState,
 ): Response {
-  if (state.executor) {
+  if (executorWorker) {
+    sendToWorker({ type: "pause" });
+    state.executorState = "paused";
+  } else if (state.executor) {
+    // Inline executor (test mode)
     state.executor.pause();
     state.executorState = "paused";
   }
@@ -721,11 +719,14 @@ function handleExecutorResume(
   _req: Request,
   state: ServerState,
 ): Response {
-  if (state.executor) {
+  if (executorWorker) {
+    sendToWorker({ type: "resume" });
+    state.executorState = "running";
+  } else if (state.executor) {
+    // Inline executor (test mode)
     state.executor.resume();
     state.executorState = "running";
-    // Signal the executor loop to wake up — don't call run() here
-    kickExecutor(state);
+    kickInlineExecutor(state);
   }
   return json({ state: state.executorState });
 }
@@ -920,25 +921,62 @@ const routes: Route[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Executor run loop — runs independently of HTTP request lifecycle
+// Executor worker management
 // ---------------------------------------------------------------------------
 
-let executorRunning = false;
+let executorWorker: Worker | null = null;
 
-async function runExecutorLoop(state: ServerState) {
-  if (executorRunning || !state.executor) return;
-  executorRunning = true;
-  try {
-    await state.executor.run();
-  } finally {
-    executorRunning = false;
-    state.executorState = "idle";
-  }
+function startExecutorWorker(state: ServerState, dbPath: string) {
+  const workerPath = new URL("./executor-worker.ts", import.meta.url).href;
+  const worker = new Worker(workerPath);
+
+  worker.onmessage = (event: MessageEvent) => {
+    const msg = event.data;
+
+    if (msg.type === "stats_refresh") {
+      broadcast(state, "stats", buildStats(state));
+      return;
+    }
+
+    if (msg.type === "executor_state") {
+      state.executorState = msg.data.state;
+      broadcast(state, "executor_state", msg.data);
+      return;
+    }
+
+    // Forward all other events as SSE broadcasts
+    if (msg.actionId) {
+      broadcast(state, msg.type, msg.data, msg.actionId);
+    } else {
+      broadcast(state, msg.type, msg.data);
+    }
+  };
+
+  worker.onerror = (err) => {
+    console.error("Executor worker error:", err);
+  };
+
+  // Initialize the worker with the database path
+  worker.postMessage({ type: "init", dbPath });
+
+  executorWorker = worker;
+  state.executorState = "running";
 }
 
-function kickExecutor(state: ServerState) {
-  if (executorRunning) return;
-  queueMicrotask(() => runExecutorLoop(state));
+function sendToWorker(msg: { type: string }) {
+  executorWorker?.postMessage(msg);
+}
+
+// Inline executor run loop — only used in test mode (noExecutor + manual executor)
+let inlineExecutorRunning = false;
+function kickInlineExecutor(state: ServerState) {
+  if (inlineExecutorRunning || !state.executor) return;
+  queueMicrotask(async () => {
+    if (inlineExecutorRunning || !state.executor) return;
+    inlineExecutorRunning = true;
+    try { await state.executor.run(); }
+    finally { inlineExecutorRunning = false; state.executorState = "idle"; }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -964,51 +1002,12 @@ export function startServer(options: ServerOptions = {}) {
   };
 
   if (!options.noExecutor && !executor) {
-    executor = new Executor(db, {
-      projectDir: ".",
-      runActionFn: runAction,
-      onActionStart: (action) => {
-        broadcast(state, "action_started", { action_id: action.id, type: action.type }, action.id);
-        broadcast(state, "stats", buildStats(state));
-      },
-      onActionEnd: (action, result) => {
-        broadcast(state, "action_completed", {
-          action_id: action.id,
-          condition: result.condition,
-          cost_usd: result.cost_usd,
-        }, action.id);
-        broadcast(state, "stats", buildStats(state));
-      },
-      onActionWaiting: (action) => {
-        broadcast(state, "action_waiting", { action_id: action.id }, action.id);
-      },
-      onToolUse: (action, toolName, toolInput) => {
-        broadcast(state, "tool_use", {
-          action_id: action.id,
-          tool_name: toolName,
-          tool_input: toolInput,
-        }, action.id);
-      },
-      onEdgeTraversed: (from, to, condition) => {
-        broadcast(state, "edge_traversed", { from, to, condition });
-      },
-      onUnhandledFailure: (action, condition) => {
-        broadcast(state, "unhandled_failure", {
-          action_id: action.id,
-          condition,
-          output: action.output,
-        }, action.id);
-        broadcast(state, "stats", buildStats(state));
-      },
-      onIdle: () => {
-        broadcast(state, "executor_state", { state: "idle", pending_count: 0 });
-        broadcast(state, "stats", buildStats(state));
-      },
-    });
-    state.executor = executor;
-    // Start executor loop on next tick — fully decoupled from server startup
-    executorState = "running";
-    kickExecutor(state);
+    // Start executor in a separate worker thread
+    const dbPath = options.dbPath ?? ":memory:";
+    if (dbPath !== ":memory:") {
+      startExecutorWorker(state, dbPath);
+    }
+    // If dbPath is :memory: and no executor provided, skip (can't share in-memory DB across threads)
   }
 
   // Make executorState a proxy via getter/setter
@@ -1022,7 +1021,6 @@ export function startServer(options: ServerOptions = {}) {
 
   const server = Bun.serve({
     port,
-    idleTimeout: 255, // max value — prevent Bun from killing long-running executor tasks
     fetch: async (req) => {
       // Handle CORS preflight
       if (req.method === "OPTIONS") {
