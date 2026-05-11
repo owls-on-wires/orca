@@ -238,6 +238,13 @@ templates:
         params:
           command: "curl -sf -d \"Sprint QA complete for link-board\" ntfy.sh/orca-builds || true"
           timeout: 10
+        edges:
+          fail: complete
+          error: complete
+          stuck: complete
+          timeout: complete
+          cost_exceeded: complete
+          max_turns: complete
 
   # Supervisor: catches unhandled failures.
   supervisor:
