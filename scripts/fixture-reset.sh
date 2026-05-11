@@ -12,7 +12,8 @@ FIXTURE="${1:-calculator}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE_DIR="$MAIN_REPO/fixtures/$FIXTURE"
-WORK_DIR="$MAIN_REPO/tmp/fixtures/$FIXTURE"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+WORK_DIR="$MAIN_REPO/tmp/fixtures/$FIXTURE-$TIMESTAMP"
 
 if [ ! -d "$SOURCE_DIR" ]; then
   echo "Error: Fixture not found: $SOURCE_DIR" >&2
@@ -22,9 +23,6 @@ fi
 echo "Resetting fixture: $FIXTURE" >&2
 echo "  Source: $SOURCE_DIR" >&2
 echo "  Working copy: $WORK_DIR" >&2
-
-# Clean any previous working copy
-rm -rf "$WORK_DIR"
 
 # Copy source to working directory
 mkdir -p "$(dirname "$WORK_DIR")"
