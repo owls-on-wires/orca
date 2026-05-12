@@ -296,3 +296,122 @@ Do NOT use any tools.`,
     expect(notes).toContain("PINEAPPLE");
   }, 120000);
 });
+
+// ---------------------------------------------------------------------------
+// Tool use callback — verify onToolUse fires for agent actions
+// ---------------------------------------------------------------------------
+
+describe("Live agent: tool use callbacks", () => {
+  skipIf(SKIP)("onToolUse fires for each tool call", async () => {
+    const action = createAction({
+      id: "live.tools",
+      type: "agent",
+      status: "running",
+      params: {
+        prompt: `Read the file package.json, then return structured output: status "passed", summary "tools test done".`,
+        max_turns: 10,
+      },
+    });
+
+    const toolCalls: { name: string; input: Record<string, unknown> }[] = [];
+    const opts: RunOptions = {
+      projectDir,
+      model: "sonnet",
+      onToolUse: (name, input) => {
+        toolCalls.push({ name, input });
+      },
+    };
+
+    const result = await runAction(action, [], opts);
+
+    if ("waiting" in result) throw new Error("unexpected WaitingResult");
+    expect(result.condition).toBe("pass");
+    // Agent should have used at least one tool (Read for package.json)
+    expect(toolCalls.length).toBeGreaterThan(0);
+    const readCall = toolCalls.find(t => t.name === "Read");
+    expect(readCall).toBeDefined();
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// Nix environment — verify agents inherit project nix environment
+// ---------------------------------------------------------------------------
+
+describe("Live agent: nix environment", () => {
+  skipIf(SKIP)("agent can use tools from project's shell.nix", async () => {
+    // The orca project has a shell.nix that provides bun.
+    // Run an agent that checks if bun is available via Bash.
+    const action = createAction({
+      id: "live.nix",
+      type: "agent",
+      status: "running",
+      params: {
+        prompt: `Run this exact command: bun --version
+Then return structured output:
+- status: "passed" if the command succeeded
+- status: "failed" if it errored
+- summary: the version string output by the command`,
+        max_turns: 5,
+      },
+    });
+
+    const result = await runAction(action, [], {
+      projectDir,
+      model: "sonnet",
+    });
+
+    if ("waiting" in result) throw new Error("unexpected WaitingResult");
+    // bun should be available (we're inside the orca project's nix shell)
+    expect(result.condition).toBe("pass");
+    expect(result.output.summary).toMatch(/\d+\.\d+/); // version number
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// JSONL logging — verify log file is written during agent execution
+// ---------------------------------------------------------------------------
+
+describe("Live agent: JSONL logging", () => {
+  skipIf(SKIP)("agent execution writes JSONL log with tool calls", async () => {
+    const { mkdtempSync } = require("fs");
+    const { readFileSync } = require("fs");
+    const { join } = require("path");
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-log-"));
+    const logPath = join(tmpDir, "live.log.jsonl");
+
+    const action = createAction({
+      id: "live.log",
+      type: "agent",
+      status: "running",
+      params: {
+        prompt: `Read package.json. Return structured output: status "passed", summary "log test".`,
+        max_turns: 5,
+      },
+    });
+
+    await runAction(action, [], {
+      projectDir,
+      model: "sonnet",
+      logPath,
+    });
+
+    // Log file should exist and have entries
+    const content = readFileSync(logPath, "utf8");
+    const lines = content.trim().split("\n").filter(Boolean);
+    expect(lines.length).toBeGreaterThan(0);
+
+    // Should have invoke_start and invoke_end
+    const events = lines.map(l => JSON.parse(l).event_type);
+    expect(events).toContain("invoke_start");
+    expect(events).toContain("invoke_end");
+
+    // Should have tool_use entries
+    expect(events).toContain("tool_use");
+
+    // invoke_end should have structured output
+    const endEntry = JSON.parse(lines[lines.length - 1]);
+    expect(endEntry.event_type).toBe("invoke_end");
+    expect(endEntry.structured_output).toBeDefined();
+    expect(endEntry.cost_usd).toBeGreaterThan(0);
+  }, 60000);
+});
