@@ -90,6 +90,58 @@ export function buildPredecessorPrompt(predecessors: PredecessorOutput[]): strin
 }
 
 // ---------------------------------------------------------------------------
+// Nix environment resolution for agent actions
+// ---------------------------------------------------------------------------
+
+let nixEnvCache: Map<string, Record<string, string>> = new Map();
+
+/** Exported for testing */
+export function clearNixEnvCache() { nixEnvCache.clear(); }
+
+export function resolveNixEnv(projectDir: string, nixConfig?: NixConfig): Record<string, string | undefined> | undefined {
+  if (!nixConfig || nixConfig.enable === false) {
+    // Auto-detect: check if project has flake.nix or shell.nix
+    const dir = resolve(projectDir);
+    const hasFlake = existsSync(`${dir}/flake.nix`);
+    const hasShell = existsSync(`${dir}/shell.nix`);
+    const hasDefault = existsSync(`${dir}/default.nix`);
+    if (!hasFlake && !hasShell && !hasDefault) return undefined;
+    // Auto-detected — proceed with undefined nixConfig (buildNixCommand handles auto-detect)
+  }
+
+  const cacheKey = resolve(projectDir);
+  if (nixEnvCache.has(cacheKey)) return nixEnvCache.get(cacheKey)!;
+
+  try {
+    const envCmd = buildNixCommand(resolve(projectDir), nixConfig, ["env"]);
+    // If buildNixCommand returns just ["env"], no nix wrapping — skip
+    if (envCmd.length === 1 && envCmd[0] === "env") return undefined;
+
+    const proc = Bun.spawnSync(envCmd, {
+      cwd: resolve(projectDir),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    if (proc.exitCode !== 0) return undefined;
+
+    const env: Record<string, string> = {};
+    const output = new TextDecoder().decode(proc.stdout);
+    for (const line of output.split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq > 0) {
+        env[line.slice(0, eq)] = line.slice(eq + 1);
+      }
+    }
+
+    nixEnvCache.set(cacheKey, env);
+    return env;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Watchdog: recovers from SDK generator hangs by reading JSONL log
 // ---------------------------------------------------------------------------
 
@@ -212,6 +264,9 @@ async function runAgentAction(
 
   const fullPrompt = parts.join("\n\n");
 
+  // Resolve nix environment for the project (cached per projectDir)
+  const nixEnv = resolveNixEnv(options.projectDir, options.nix);
+
   const result = await invokeWithWatchdog({
     prompt: fullPrompt,
     projectDir: resolve(options.projectDir),
@@ -224,6 +279,7 @@ async function runAgentAction(
     systemPrompt,
     label: action.id,
     abortController: options.abortController,
+    env: nixEnv,
   }, options.onToolUse);
 
   // Always extract cost/turns/duration regardless of subtype

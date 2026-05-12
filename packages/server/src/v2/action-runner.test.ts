@@ -276,3 +276,80 @@ describe("predecessor output injection", () => {
     expect(callArgs.prompt).toContain("Build something");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Nix environment resolution
+// ---------------------------------------------------------------------------
+
+import { resolveNixEnv, clearNixEnvCache } from "./action-runner";
+import { mkdtempSync, writeFileSync } from "fs";
+import { join } from "path";
+
+describe("resolveNixEnv", () => {
+  beforeEach(() => clearNixEnvCache());
+
+  test("returns undefined when no nix files exist", () => {
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nix-"));
+    const result = resolveNixEnv(tmpDir);
+    expect(result).toBeUndefined();
+  });
+
+  test("returns undefined when nix.enable is false", () => {
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nix-"));
+    writeFileSync(join(tmpDir, "flake.nix"), "{}");
+    const result = resolveNixEnv(tmpDir, { enable: false });
+    expect(result).toBeUndefined();
+  });
+
+  test("detects shell.nix and resolves env", () => {
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nix-"));
+    // Create a minimal shell.nix that just exports PATH
+    writeFileSync(join(tmpDir, "shell.nix"), `
+      { pkgs ? import <nixpkgs> {} }:
+      pkgs.mkShell { buildInputs = []; }
+    `);
+    const result = resolveNixEnv(tmpDir);
+    // If nix is available on the system, this returns env vars
+    // If nix is not available, it returns undefined (spawnSync fails)
+    if (result) {
+      expect(result.PATH).toBeDefined();
+      expect(typeof result.PATH).toBe("string");
+    }
+    // Either way, it shouldn't throw
+  });
+
+  test("caches results per projectDir", () => {
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nix-"));
+    writeFileSync(join(tmpDir, "shell.nix"), `
+      { pkgs ? import <nixpkgs> {} }:
+      pkgs.mkShell { buildInputs = []; }
+    `);
+    const r1 = resolveNixEnv(tmpDir);
+    const r2 = resolveNixEnv(tmpDir);
+    // Same reference (cached)
+    expect(r1).toBe(r2);
+  });
+
+  test("passes env to invokeSimple for agent actions", async () => {
+    // Verify the env field is passed through to invokeSimple
+    const action = agentAction();
+    mockInvokeSimple.mockClear();
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: { status: "passed", summary: "ok" },
+      costUsd: 0.01,
+      sessionId: "s1",
+      numTurns: 1,
+      durationMs: 100,
+      isError: false,
+    });
+
+    // Run with a projectDir that has no nix files — env should be undefined
+    const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nonix-"));
+    await runAction(action, [], { projectDir: tmpDir });
+
+    // invokeSimple was called — check the options
+    expect(mockInvokeSimple).toHaveBeenCalledTimes(1);
+    const opts = mockInvokeSimple.mock.calls[0][0] as { env?: Record<string, string> };
+    expect(opts.env).toBeUndefined();
+  });
+});

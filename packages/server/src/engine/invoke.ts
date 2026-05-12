@@ -31,6 +31,7 @@ export interface InvokeOptions {
   label?: string;
   logPath?: string;
   abortController?: AbortController;
+  env?: Record<string, string | undefined>;
 }
 
 export interface InvokeResult {
@@ -169,6 +170,7 @@ export async function* invoke(
     outputFormat,
     settingSources: ["user", "project", "local"],
     abortController: options.abortController,
+    env: options.env,
   };
 
   log.write("invoke_start", {
