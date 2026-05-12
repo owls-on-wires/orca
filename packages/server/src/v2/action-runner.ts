@@ -372,11 +372,9 @@ async function runCommandAction(
   let timedOut = false;
 
   try {
-    // Wrap command in nix shell if project has nix config
+    // Wrap command in nix shell (auto-detects flake.nix/shell.nix if no explicit config)
     const baseCmd = ["sh", "-c", interpolated];
-    const cmd = options.nix
-      ? buildNixCommand(resolve(options.projectDir), options.nix, baseCmd)
-      : baseCmd;
+    const cmd = buildNixCommand(resolve(options.projectDir), options.nix, baseCmd);
 
     const proc = Bun.spawn(cmd, {
       cwd: resolve(options.projectDir),
@@ -413,9 +411,7 @@ async function runCommandAction(
     while (Date.now() - pollStart < waitTimeout) {
       try {
         const waitCmd = ["sh", "-c", waitFor];
-        const wrappedWait = options.nix
-          ? buildNixCommand(resolve(options.projectDir), options.nix, waitCmd)
-          : waitCmd;
+        const wrappedWait = buildNixCommand(resolve(options.projectDir), options.nix, waitCmd);
         const check = Bun.spawnSync(wrappedWait, {
           cwd: resolve(options.projectDir),
         });
