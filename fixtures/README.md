@@ -2,6 +2,8 @@
 
 Test projects for validating the orca orchestrator. Ordered by complexity.
 
+Fixtures are immutable source files. `scripts/fixture-run.sh` copies them to `tmp/fixtures/{name}-{timestamp}/`, inits a git repo, and imports into the running orca server.
+
 ## calculator
 
 Bun math library with 3 bugs to fix. Simplest fixture — good for smoke testing the executor.
@@ -34,47 +36,36 @@ Bun REST API with bugs to fix and features to add. Tests the full TDD retry loop
 
 ## bookmark-api
 
-Full REST API built from scratch via TDD. Agents write tests first, then implement. Agentic QA tests live endpoints with curl. Most complex static fixture — 17 tasks across 8 phases.
+Full REST API built from scratch via TDD. Agents write tests first, then implement. Agentic QA tests live endpoints with curl.
 
 | | |
 |---|---|
 | **Type** | REST API (Bun.serve, SQLite) |
 | **Tasks** | 17 |
-| **Actions** | 57 (write-tests + develop + eval [+ qa] per task) |
-| **Stages** | write-tests → develop → eval → qa |
+| **Actions** | ~60 (write-tests + develop + eval + commit [+ qa] per task) |
+| **Stages** | write-tests → develop → eval → commit → qa |
 | **Testing** | Unit tests (bun test), agentic integration QA (curl against live server) |
 | **Templates** | setup, tdd, tdd-qa |
 | **Graph** | 8-phase DAG with diamonds — env setup → schema → data layer → API → features → advanced → analytics → final |
-| **Starting state** | Bare scaffold — only package.json, tsconfig, SPEC.md, and a /health endpoint |
+| **Starting state** | Bare scaffold — package.json, tsconfig, SPEC.md, /health endpoint |
 
 **Features built**: CRUD, tags, favorites, search, sorting, pagination, collections, archive, URL validation, bulk import/export, click tracking, stats dashboard, notes
 
 ## link-board
 
-Link-sharing platform (like Hacker News) built entirely via **dynamic tasking**. The graph starts with a single planner action — no pre-defined tasks. The planner agent reads an epic list, decomposes each epic into TDD tasks, and creates them on the fly via the orca HTTP API.
+Link-sharing platform (like Hacker News) built via **dynamic tasking**. The graph starts with a single planner action and a supervisor. The planner reads an epic list, decomposes each epic into TDD task groups via `POST /groups`, adds sprint QA after each epic, and chains the next planner. The supervisor catches unhandled failures.
 
 | | |
 |---|---|
 | **Type** | REST API (Bun.serve, SQLite) |
 | **Tasks** | ~15-20 (dynamically created) |
-| **Actions** | ~55-65 (dynamically created) |
-| **Stages** | write-tests → develop → eval (created by planner) |
-| **Testing** | Unit tests (bun test), created by agents |
-| **Templates** | None — planner creates raw actions via POST /actions |
-| **Graph** | Grows dynamically — planner → [epic tasks] → planner → [epic tasks] → ... |
-| **Starting state** | Bare scaffold + EPICS.md + ORCA-API.yaml. Single planner action. |
+| **Actions** | ~50 (dynamically created) |
+| **Stages** | write-tests → develop → eval → commit [→ qa] |
+| **Testing** | Unit tests (bun test), agentic sprint QA (curl against live server) |
+| **Templates** | planner, tdd, tdd-qa, dev, sprint-qa, notify, supervisor |
+| **Graph** | Grows dynamically — planner → [tasks] → notify → sprint-qa → planner → ... |
+| **Starting state** | Bare scaffold — package.json, tsconfig, EPICS.md, /health endpoint |
 
 **Epics**: Users & Auth, Links (submit/vote/sort), Threaded Comments, Profiles & Karma, Moderation & Search
 
-**Key difference**: No SPEC.md, no pre-defined tasks, no templates used at runtime. The planner agent is the architect — it decides the schema, endpoints, task decomposition, and test strategy. The orca API schema (ORCA-API.yaml) tells the planner how to manipulate the graph.
-
----
-
-## Planned
-
-Future fixtures to expand coverage:
-
-- **fullstack-app** — Frontend + backend, multi-process (API server + dev server), browser-based QA via Playwright
-- **microservices** — Multi-container (docker-compose), inter-service communication, agent-managed infrastructure
-- **monorepo** — Workspace with shared packages, cross-package dependencies, coordinated releases
-- **self-improvement** — Open-ended dynamic tasking; system suggests improvements to itself and implements them
+**Key features**: Dynamic task creation via `POST /groups`, sprint QA between epics (pass/fail both chain to next planner), global fallback supervisor, ntfy push notifications after each sprint, git commits after each eval pass, planner prompt lives in template (inherits automatically), agents read `/llms.txt` for API self-discovery.
