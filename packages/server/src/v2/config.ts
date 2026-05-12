@@ -259,9 +259,15 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
     }
   }
 
-  // Then insert edges
+  // Then insert edges (skip invalid references gracefully)
   for (const edge of allEdges) {
-    db.insertEdge(edge);
+    try {
+      db.insertEdge(edge);
+    } catch {
+      // Edge references a nonexistent action — skip silently.
+      // This can happen when edge targets reference cross-task actions
+      // (e.g., "supervisor") that resolve as literal IDs but don't exist.
+    }
   }
 
   return config;
