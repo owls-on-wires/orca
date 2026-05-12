@@ -56,7 +56,7 @@ tasks:
     depends_on: [task1]
 `;
 
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     // Verify actions created
     const actions = db.listActions();
@@ -148,7 +148,7 @@ tasks:
     actions: [develop-cmd, eval-cmd]
 `;
 
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     let evalCallCount = 0;
     const runOrder: string[] = [];
@@ -238,7 +238,7 @@ describe("e2e: server API", () => {
     const importRes = await fetch(`${baseUrl}/import`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, source_dir: "/tmp" }),
     });
     expect(importRes.status).toBe(200);
     const importData = await importRes.json();
@@ -331,7 +331,7 @@ describe("e2e: human action", () => {
     await fetch(`${baseUrl}/import`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, source_dir: "/tmp" }),
     });
 
     // Create and start executor — it will run cmd-a, then notify will enter waiting
@@ -442,7 +442,7 @@ describe("e2e: SSE events", () => {
     await fetch(`${baseUrl}/import`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, source_dir: "/tmp" }),
     });
 
     // Create executor with SSE broadcasting
@@ -533,7 +533,7 @@ describe("e2e: tag operations", () => {
     await fetch(`${baseUrl}/import`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({ config, source_dir: "/tmp" }),
     });
 
     // GET /actions?tag=type:cmd-a → should return task1.cmd-a and task2.cmd-a

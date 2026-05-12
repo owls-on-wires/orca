@@ -27,24 +27,47 @@ to the supervisor — it's a catch-all safety net.
 
 ## Defining a supervisor
 
-In project.orca.yaml:
-
 ```yaml
-defaults:
-  types:
-    supervisor:
-      type: agent
-      max_turns: 40
-      toolset: all
-      params:
-        prompt: >
-          An action has failed with no recovery edge.
-          Check params.failed_action and params.failed_condition.
-          Use the orca API to diagnose and fix:
-          1. Read the failed action: curl /actions/{failed_action}
-          2. Check its logs: curl /actions/{failed_action}/logs
-          3. Fix the issue (update prompt, add edges, fix code)
-          4. Retry: curl -X POST /actions/{failed_action}/retry
+templates:
+  supervisor:
+    actions: [diagnose]
+    types:
+      diagnose:
+        type: agent
+        max_turns: 40
+        toolset: all
+        tags: ["type:supervisor"]
+        params:
+          prompt: >
+            An action has failed with no recovery edge.
+
+            The orca API is at http://localhost:7072.
+            Read http://localhost:7072/llms.txt for the API reference.
+
+            Check params.failed_action and params.failed_condition
+            for context about what failed.
+
+            Steps:
+            1. Read the failed action's detail and logs:
+               curl -s http://localhost:7072/actions/{failed_action} | jq .
+               curl -s http://localhost:7072/actions/{failed_action}/logs | jq .
+            2. Read the source code the action was working on.
+            3. Diagnose the root cause.
+            4. Handle based on failure condition:
+
+               FOR TIMEOUT / MAX_TURNS / COST_EXCEEDED:
+               Check the action's history and iteration count. If the
+               agent was making progress (tests improving across iterations),
+               bump the budget and retry. If no progress (same errors
+               repeating), return "failed" with notes.
+
+               FOR FAIL / ERROR / STUCK:
+               Fix the underlying issue — edit source code, fix test
+               expectations, update config. Then retry the action:
+               curl -X POST http://localhost:7072/actions/{failed_action}/retry
+
+            5. Report status: "passed" after fixing and retrying.
+               Report status: "failed" if the issue cannot be resolved.
 
 tasks:
   - id: supervisor
@@ -53,6 +76,21 @@ tasks:
 
 The supervisor sits inactive until the fallback activates it.
 
+## Supervisor prompt guidelines
+
+The supervisor prompt should:
+- Reference the orca API (`/llms.txt` for full reference)
+- Tell the agent to read failure context from its own params
+- Distinguish between budget failures (retry with more runway) and
+  code failures (fix and retry)
+- Specify how to use the API to retry actions
+- Include project-specific context (tech stack, conventions) so the
+  supervisor can fix code effectively
+
+Avoid making the supervisor's max_turns too high (30-40 is enough).
+The supervisor should diagnose and fix quickly, not get stuck in
+extended debugging loops.
+
 ## Error vs fail
 
 - **fail**: The agent explicitly returned `status: "failed"`.
@@ -60,10 +98,14 @@ The supervisor sits inactive until the fallback activates it.
 - **error**: The agent returned malformed output (`status: "unknown"`
   or missing). Something went wrong with execution. May need
   prompt adjustment or investigation.
+- **stuck**: Same output repeated 3 times. The agent is in a loop.
+  May need prompt changes or a different approach.
+- **timeout**: Wall-clock or command timeout. May need more time
+  (increase wall_timeout) or the agent/command is hung.
 
 This distinction matters for edge routing. Templates typically
-route `fail` back to develop (retry), but `error` may warrant
-supervisor intervention.
+route `fail` back to develop (retry), but `error` and `stuck`
+may warrant supervisor intervention or routing to a different action.
 
 ## Supervisor can be re-activated
 
@@ -92,5 +134,25 @@ UI can use this to alert the user.
 If no `type:supervisor` action exists in the project, the executor
 fires the `onUnhandledFailure` callback (SSE event) but takes no
 other action. The failed action stays failed, and the executor
-may idle if nothing else is pending. Check the graph manually
-and retry or fix as needed.
+may idle if nothing else is pending.
+
+## Failure edge best practices
+
+Define edges for all 7 conditions on critical actions, even if
+most route to the same place:
+
+```yaml
+eval:
+  edges:
+    fail: develop
+    error: develop
+    stuck: develop
+    timeout: develop
+    cost_exceeded: develop
+    max_turns: develop
+```
+
+This prevents unnecessary supervisor activation. Reserve the
+supervisor for truly unexpected failures where no explicit edge
+exists. The supervisor is a safety net, not the primary retry
+mechanism.

@@ -33,7 +33,7 @@ tasks:
 
 describe("expandConfig", () => {
   test("simple 2-action task expansion", () => {
-    const config = expandConfig(minimalConfig, db);
+    const config = expandConfig(minimalConfig, db, "/tmp");
 
     expect(config.name).toBe("test-project");
 
@@ -50,7 +50,7 @@ describe("expandConfig", () => {
   });
 
   test("first action is pending, rest are inactive", () => {
-    expandConfig(minimalConfig, db);
+    expandConfig(minimalConfig, db, "/tmp");
 
     const dev = db.getAction("auth.develop");
     expect(dev!.status).toBe("pending");
@@ -60,7 +60,7 @@ describe("expandConfig", () => {
   });
 
   test("default edges when no edges map specified", () => {
-    expandConfig(minimalConfig, db);
+    expandConfig(minimalConfig, db, "/tmp");
 
     // develop (index 0): pass → eval (next). Self-loop edges (fail → develop) are skipped.
     const devEdges = db.getEdgesFrom("auth.develop");
@@ -88,7 +88,7 @@ tasks:
     actions: [develop]
     tags: [priority-high, backend]
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     const action = db.getAction("auth.develop");
     expect(action!.tags).toContain("type:develop");
@@ -131,7 +131,7 @@ tasks:
     prompt: "Build auth module"
     actions: [develop, eval, deploy, qa]
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     // Verify actions created
     expect(db.getAction("auth.develop")).not.toBeNull();
@@ -182,7 +182,7 @@ tasks:
     prompt: "Build auth"
     actions: [develop, qa]
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     const supervisor = db.getAction("auth.supervisor");
     expect(supervisor).not.toBeNull();
@@ -214,7 +214,7 @@ tasks:
     actions: [develop, eval]
     depends_on: [auth]
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     // auth.eval (terminal) should have a pass edge to dashboard.develop (first)
     const authEvalEdges = db.getEdgesFrom("auth.eval");
@@ -240,7 +240,7 @@ tasks:
     prompt: "Build auth"
     actions: [develop, nonexistent]
 `;
-    expect(() => expandConfig(yaml, db)).toThrow(/Unknown action type nonexistent/);
+    expect(() => expandConfig(yaml, db, "/tmp")).toThrow(/Unknown action type nonexistent/);
   });
 
   test("invalid config - missing name", () => {
@@ -254,7 +254,7 @@ tasks:
     prompt: "Build auth"
     actions: [develop]
 `;
-    expect(() => expandConfig(yaml, db)).toThrow(/missing name/);
+    expect(() => expandConfig(yaml, db, "/tmp")).toThrow(/missing name/);
   });
 
   test("budget merged into params", () => {
@@ -274,7 +274,7 @@ tasks:
       max_iterations: 5
       max_cost: 2.50
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     const action = db.getAction("auth.develop");
     expect(action!.params.max_iterations).toBe(5);
@@ -303,7 +303,7 @@ tasks:
       eval:
         command: "bun test test/auth.test.ts"
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     const evalAction = db.getAction("auth.eval");
     expect(evalAction!.params.command).toBe("bun test test/auth.test.ts");
@@ -328,7 +328,7 @@ tasks:
     template: bugfix
     prompt: "Fix the bug"
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     const dev = db.getAction("fix-bug.develop");
     const ev = db.getAction("fix-bug.eval");
@@ -358,7 +358,7 @@ tasks:
     prompt: "Simple task"
     actions: [develop, eval]
 `;
-    expandConfig(yaml, db);
+    expandConfig(yaml, db, "/tmp");
 
     const dev = db.getAction("simple.develop");
     const ev = db.getAction("simple.eval");
@@ -379,7 +379,7 @@ tasks:
   - id: broken
     prompt: "No actions"
 `;
-    expect(() => expandConfig(yaml, db)).toThrow(/no actions/);
+    expect(() => expandConfig(yaml, db, "/tmp")).toThrow(/no actions/);
   });
 });
 
@@ -417,13 +417,13 @@ tasks:
 
 describe("reimportTasks", () => {
   test("replaces actions for specified task only", () => {
-    expandConfig(reimportConfig, db);
+    expandConfig(reimportConfig, db, "/tmp");
 
     // Modify task-b's develop to simulate progress
     db.updateAction("task-b.develop", { status: "completed", output: { status: "passed" } });
 
     // Re-import task-b (should reset it)
-    const result = reimportTasks(reimportConfig, db, ["task-b"]);
+    const result = reimportTasks(reimportConfig, db, ["task-b"], "/tmp");
 
     expect(result.replaced).toEqual(["task-b"]);
     expect(result.actions).toContain("task-b.develop");
@@ -439,14 +439,14 @@ describe("reimportTasks", () => {
   });
 
   test("preserves other tasks' state", () => {
-    expandConfig(reimportConfig, db);
+    expandConfig(reimportConfig, db, "/tmp");
 
     // Mark task-a as completed
     db.updateAction("task-a.develop", { status: "completed" });
     db.updateAction("task-a.eval", { status: "completed", output: { status: "passed" } });
 
     // Re-import task-b
-    reimportTasks(reimportConfig, db, ["task-b"]);
+    reimportTasks(reimportConfig, db, ["task-b"], "/tmp");
 
     // task-a still completed
     expect(db.getAction("task-a.develop")!.status).toBe("completed");
@@ -457,8 +457,8 @@ describe("reimportTasks", () => {
   });
 
   test("re-creates intra-task edges", () => {
-    expandConfig(reimportConfig, db);
-    reimportTasks(reimportConfig, db, ["task-b"]);
+    expandConfig(reimportConfig, db, "/tmp");
+    reimportTasks(reimportConfig, db, ["task-b"], "/tmp");
 
     // task-b.develop → task-b.eval [pass] should exist
     const devEdges = db.getEdgesFrom("task-b.develop");
@@ -474,8 +474,8 @@ describe("reimportTasks", () => {
   });
 
   test("re-creates cross-task dependency edges (incoming)", () => {
-    expandConfig(reimportConfig, db);
-    reimportTasks(reimportConfig, db, ["task-b"]);
+    expandConfig(reimportConfig, db, "/tmp");
+    reimportTasks(reimportConfig, db, ["task-b"], "/tmp");
 
     // task-a.eval → task-b.develop [pass] should exist (task-b depends_on task-a)
     const aEvalEdges = db.getEdgesFrom("task-a.eval");
@@ -486,8 +486,8 @@ describe("reimportTasks", () => {
   });
 
   test("re-creates cross-task dependency edges (outgoing)", () => {
-    expandConfig(reimportConfig, db);
-    reimportTasks(reimportConfig, db, ["task-b"]);
+    expandConfig(reimportConfig, db, "/tmp");
+    reimportTasks(reimportConfig, db, ["task-b"], "/tmp");
 
     // task-b.eval → task-c.develop [pass] should exist (task-c depends_on task-b)
     const bEvalEdges = db.getEdgesFrom("task-b.eval");
@@ -498,7 +498,7 @@ describe("reimportTasks", () => {
   });
 
   test("picks up template changes", () => {
-    expandConfig(reimportConfig, db);
+    expandConfig(reimportConfig, db, "/tmp");
 
     // Original: task-c has qa action
     expect(db.getAction("task-c.qa")).not.toBeNull();
@@ -513,7 +513,7 @@ describe("reimportTasks", () => {
       "edges: { fail: develop }",
       "edges: { fail: develop }",
     );
-    reimportTasks(modified, db, ["task-c"]);
+    reimportTasks(modified, db, ["task-c"], "/tmp");
 
     // Actions still exist
     expect(db.getAction("task-c.qa")).not.toBeNull();
@@ -524,8 +524,8 @@ describe("reimportTasks", () => {
   });
 
   test("handles re-import of task with no dependencies", () => {
-    expandConfig(reimportConfig, db);
-    reimportTasks(reimportConfig, db, ["task-a"]);
+    expandConfig(reimportConfig, db, "/tmp");
+    reimportTasks(reimportConfig, db, ["task-a"], "/tmp");
 
     // task-a.develop should be pending (first action, no depends_on)
     expect(db.getAction("task-a.develop")!.status).toBe("pending");
@@ -536,14 +536,14 @@ describe("reimportTasks", () => {
   });
 
   test("handles re-import of multiple tasks at once", () => {
-    expandConfig(reimportConfig, db);
+    expandConfig(reimportConfig, db, "/tmp");
 
     // Mark some as completed
     db.updateAction("task-a.develop", { status: "completed" });
     db.updateAction("task-b.develop", { status: "completed" });
 
     // Re-import both a and b
-    const result = reimportTasks(reimportConfig, db, ["task-a", "task-b"]);
+    const result = reimportTasks(reimportConfig, db, ["task-a", "task-b"], "/tmp");
     expect(result.replaced).toEqual(["task-a", "task-b"]);
     expect(result.actions.length).toBe(4); // 2 actions each
 
@@ -557,33 +557,33 @@ describe("reimportTasks", () => {
   });
 
   test("throws for unknown task ID", () => {
-    expandConfig(reimportConfig, db);
-    expect(() => reimportTasks(reimportConfig, db, ["nonexistent"])).toThrow(/not found in config/);
+    expandConfig(reimportConfig, db, "/tmp");
+    expect(() => reimportTasks(reimportConfig, db, ["nonexistent"], "/tmp")).toThrow(/not found in config/);
   });
 
   test("clears history for re-imported actions", () => {
-    expandConfig(reimportConfig, db);
+    expandConfig(reimportConfig, db, "/tmp");
 
     // Add some history
     db.appendHistory("task-b.develop", "completed", { condition: "pass" });
     expect(db.getHistory("task-b.develop").length).toBe(1);
 
     // Re-import task-b
-    reimportTasks(reimportConfig, db, ["task-b"]);
+    reimportTasks(reimportConfig, db, ["task-b"], "/tmp");
 
     // History should be cleared (action was deleted and re-created)
     expect(db.getHistory("task-b.develop").length).toBe(0);
   });
 
   test("does not null out other actions' project_id", () => {
-    expandConfig(reimportConfig, db);
+    expandConfig(reimportConfig, db, "/tmp");
 
     // Verify project_id is set
     expect(db.getAction("task-a.develop")!.project_id).toBe("reimport-test");
     expect(db.getAction("task-c.develop")!.project_id).toBe("reimport-test");
 
     // Re-import only task-b
-    reimportTasks(reimportConfig, db, ["task-b"]);
+    reimportTasks(reimportConfig, db, ["task-b"], "/tmp");
 
     // Other actions' project_id should still be set
     expect(db.getAction("task-a.develop")!.project_id).toBe("reimport-test");

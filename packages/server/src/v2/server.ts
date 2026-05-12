@@ -187,11 +187,18 @@ async function handleImport(
     yamlString = readFileSync(specPath, "utf8");
     sourceDir = dir;
   } else if (typeof body.yaml === "string") {
+    if (typeof body.source_dir !== "string") {
+      return jsonError("'source_dir' is required when using 'yaml' — the directory the YAML config lives in, used to resolve relative paths like project_dir. Prefer using 'dir' instead to point to the project directory containing project.orca.yaml.");
+    }
     yamlString = body.yaml;
-    sourceDir = typeof body.source_dir === "string" ? body.source_dir : undefined;
+    sourceDir = body.source_dir;
   } else if (body.config) {
+    if (typeof body.source_dir !== "string") {
+      return jsonError("'source_dir' is required when using 'config' — the directory the config describes, used to resolve relative paths like project_dir. Prefer using 'dir' instead to point to the project directory containing project.orca.yaml.");
+    }
     const yaml = await import("js-yaml");
     yamlString = yaml.dump(body.config);
+    sourceDir = body.source_dir;
   } else if (typeof body.template === "string" && typeof body.project === "string") {
     const resolved = await resolveTemplate(body.project as string, body.template as string, body.tasks as any[], state.db);
     if (typeof resolved === "string") return jsonError(resolved);
@@ -244,8 +251,11 @@ async function handleReimport(
     yamlString = readFileSync(specPath, "utf8");
     sourceDir = dir;
   } else if (typeof body.yaml === "string") {
+    if (typeof body.source_dir !== "string") {
+      return jsonError("'source_dir' is required when using 'yaml' — the directory the YAML config lives in. Prefer using 'dir' instead.");
+    }
     yamlString = body.yaml;
-    sourceDir = typeof body.source_dir === "string" ? body.source_dir : undefined;
+    sourceDir = body.source_dir;
   }
 
   if (!yamlString) return jsonError("Body must include 'dir' or 'yaml' alongside 'tasks'");

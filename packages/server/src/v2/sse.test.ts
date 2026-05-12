@@ -131,7 +131,7 @@ describe("v2 SSE", () => {
   });
 
   it("GET /actions/:id/events filters events by action", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
 
     // Connect per-action stream for task1.develop
     const res = await fetch(url("/actions/task1.develop/events"));

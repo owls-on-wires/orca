@@ -116,11 +116,12 @@ async function cmdRun(positional: string[], flags: Record<string, string | boole
 
   const dbPath = resolveDbPath(flags);
   const yamlString = loadYaml(configPath);
+  const sourceDir = dirname(require("path").resolve(configPath));
   const db = new OrcaDatabase(dbPath);
 
   let config;
   try {
-    config = expandConfig(yamlString, db);
+    config = expandConfig(yamlString, db, sourceDir);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`Error loading config: ${msg}`);
@@ -166,10 +167,11 @@ async function cmdImport(positional: string[], flags: Record<string, string | bo
 
   const dbPath = resolveDbPath(flags);
   const yamlString = loadYaml(configPath);
+  const sourceDir = dirname(require("path").resolve(configPath));
   const db = new OrcaDatabase(dbPath);
 
   try {
-    expandConfig(yamlString, db);
+    expandConfig(yamlString, db, sourceDir);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`Error loading config: ${msg}`);

@@ -75,7 +75,7 @@ describe("v2 server", () => {
   // ── POST /actions (create) ──
 
   it("POST /actions creates an action", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await post("/actions", {
       id: "my-task.develop",
       type: "agent",
@@ -93,13 +93,13 @@ describe("v2 server", () => {
   });
 
   it("POST /actions defaults status to inactive", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { body } = await post("/actions", { id: "a.b", type: "command", project_id: "test-project" });
     expect(body.status).toBe("inactive");
   });
 
   it("POST /actions accepts explicit status", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { body } = await post("/actions", {
       id: "a.b",
       type: "agent",
@@ -110,7 +110,7 @@ describe("v2 server", () => {
   });
 
   it("POST /actions returns 409 for duplicate id", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     await post("/actions", { id: "dup.action", type: "agent", project_id: "test-project" });
     const { status, body } = await post("/actions", { id: "dup.action", type: "agent", project_id: "test-project" });
     expect(status).toBe(409);
@@ -138,7 +138,7 @@ describe("v2 server", () => {
   });
 
   it("POST /actions + POST /edges builds a chain", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     // Create two actions
     await post("/actions", { id: "chain.a", type: "agent", status: "pending", project_id: "test-project" });
     await post("/actions", { id: "chain.b", type: "command", params: { command: "echo ok" }, project_id: "test-project" });
@@ -160,7 +160,7 @@ describe("v2 server", () => {
   // ── POST /import ──
 
   it("POST /import creates actions and edges", async () => {
-    const { status, body } = await post("/import", { yaml: YAML_CONFIG });
+    const { status, body } = await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     expect(status).toBe(200);
     expect(body.actions).toBeArray();
     expect(body.actions.length).toBeGreaterThan(0);
@@ -174,14 +174,14 @@ describe("v2 server", () => {
   // ── GET /actions with filters ──
 
   it("GET /actions returns all actions", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await fetchJson("/actions");
     expect(status).toBe(200);
     expect(body.length).toBeGreaterThanOrEqual(3);
   });
 
   it("GET /actions?tag=frontend filters by tag", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { body } = await fetchJson("/actions?tag=frontend");
     for (const action of body) {
       expect(action.tags).toContain("frontend");
@@ -190,7 +190,7 @@ describe("v2 server", () => {
   });
 
   it("GET /actions?status=pending filters by status", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { body } = await fetchJson("/actions?status=pending");
     for (const action of body) {
       expect(action.status).toBe("pending");
@@ -198,7 +198,7 @@ describe("v2 server", () => {
   });
 
   it("GET /actions?type=command filters by type", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { body } = await fetchJson("/actions?type=command");
     for (const action of body) {
       expect(action.type).toBe("command");
@@ -208,7 +208,7 @@ describe("v2 server", () => {
   // ── GET /actions/:id ──
 
   it("GET /actions/:id returns action with edges and history", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await fetchJson("/actions/task1.develop");
     expect(status).toBe(200);
     expect(body.action.id).toBe("task1.develop");
@@ -227,7 +227,7 @@ describe("v2 server", () => {
   // ── PATCH /actions/:id ──
 
   it("PATCH /actions/:id updates params", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await patch("/actions/task1.develop", {
       params: { custom: "value" },
     });
@@ -236,7 +236,7 @@ describe("v2 server", () => {
   });
 
   it("PATCH /actions/:id updates tags", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { body } = await patch("/actions/task1.develop", {
       tags: ["new-tag"],
     });
@@ -251,7 +251,7 @@ describe("v2 server", () => {
   // ── DELETE /actions/:id ──
 
   it("DELETE /actions/:id deletes action", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await del("/actions/task1.develop");
     expect(status).toBe(200);
     expect(body.deleted).toBe(true);
@@ -262,7 +262,7 @@ describe("v2 server", () => {
   });
 
   it("DELETE /actions/:id cascades to edges", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
 
     // Get edges before delete
     const { body: before } = await fetchJson("/actions/task1.eval");
@@ -283,7 +283,7 @@ describe("v2 server", () => {
   // ── POST /actions/:id/retry ──
 
   it("POST /actions/:id/retry resets action", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     // First set it to completed
     await patch("/actions/task1.develop", { status: "completed" });
 
@@ -300,7 +300,7 @@ describe("v2 server", () => {
   // ── POST /actions/:id/skip ──
 
   it("POST /actions/:id/skip marks action as skipped", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await post("/actions/task1.develop/skip", {});
     expect(status).toBe(200);
     expect(body.status).toBe("skipped");
@@ -309,7 +309,7 @@ describe("v2 server", () => {
   // ── POST /actions/:id/respond ──
 
   it("POST /actions/:id/respond completes waiting action", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     // Set action to waiting
     await patch("/actions/task1.develop", { status: "waiting" });
 
@@ -329,7 +329,7 @@ describe("v2 server", () => {
   });
 
   it("POST /actions/:id/respond returns 400 for non-waiting action", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await post("/actions/task1.develop/respond", {
       status: "approved",
       summary: "test",
@@ -341,7 +341,7 @@ describe("v2 server", () => {
   // ── PATCH /actions?tag=X (bulk) ──
 
   it("PATCH /actions?tag=frontend bulk updates", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await patch("/actions?tag=frontend", {
       params: { bulk_key: "bulk_value" },
     });
@@ -362,7 +362,7 @@ describe("v2 server", () => {
   // ── Edge CRUD ──
 
   it("POST /edges creates edge", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await post("/edges", {
       from_action: "task1.develop",
       to_action: "task2.develop",
@@ -380,7 +380,7 @@ describe("v2 server", () => {
   });
 
   it("DELETE /edges/:id removes edge", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     // Create an edge
     const { body: created } = await post("/edges", {
       from_action: "task1.develop",
@@ -534,7 +534,7 @@ describe("v2 server", () => {
   });
 
   it("GET /actions/:id/logs returns empty array when no logs exist", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await fetchJson("/actions/task1.develop/logs");
     expect(status).toBe(200);
     expect(body).toEqual([]);
@@ -543,7 +543,7 @@ describe("v2 server", () => {
   // ── POST /reimport ──
 
   it("POST /reimport replaces specified tasks", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
 
     // Mark task1.develop as completed
     await patch("/actions/task1.develop", { status: "completed" });
@@ -551,6 +551,7 @@ describe("v2 server", () => {
     // Reimport task1 only
     const { status, body } = await post("/reimport", {
       yaml: YAML_CONFIG,
+      source_dir: "/tmp",
       tasks: ["task1"],
     });
     expect(status).toBe(200);
@@ -564,10 +565,10 @@ describe("v2 server", () => {
   });
 
   it("POST /reimport preserves other tasks", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     await patch("/actions/task2.develop", { status: "completed" });
 
-    await post("/reimport", { yaml: YAML_CONFIG, tasks: ["task1"] });
+    await post("/reimport", { yaml: YAML_CONFIG, source_dir: "/tmp", tasks: ["task1"] });
 
     // task2 should be untouched
     const { body: action } = await fetchJson("/actions/task2.develop");
@@ -575,16 +576,17 @@ describe("v2 server", () => {
   });
 
   it("POST /reimport returns 400 for unknown task", async () => {
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     const { status, body } = await post("/reimport", {
       yaml: YAML_CONFIG,
+      source_dir: "/tmp",
       tasks: ["nonexistent"],
     });
     expect(status).toBe(400);
   });
 
   it("POST /reimport returns 400 without tasks array", async () => {
-    const { status } = await post("/reimport", { yaml: YAML_CONFIG });
+    const { status } = await post("/reimport", { yaml: YAML_CONFIG, source_dir: "/tmp" });
     expect(status).toBe(400);
   });
 
@@ -592,7 +594,7 @@ describe("v2 server", () => {
 
   it("POST /groups creates a task chain from template", async () => {
     // First import to create the project record
-    await post("/import", { yaml: YAML_CONFIG });
+    await post("/import", { yaml: YAML_CONFIG, source_dir: "/tmp" });
 
     // Write a project.orca.yaml with templates to the project_dir
     const { writeFileSync, mkdirSync } = require("fs");

@@ -54,12 +54,23 @@ DELETE /edges/:id              Delete an edge
 
 ### Import
 POST   /import                 Import a full YAML config
-                               Body: { dir: "path" } or { yaml: "string" }
+                               PREFERRED: { dir: "/absolute/path/to/project" }
+                                 Reads project.orca.yaml from the directory.
+                                 Resolves project_dir relative to that directory.
+                                 Custom spec: { dir: "...", spec_path: "custom.yaml" }
+                               ALSO ACCEPTED: { yaml: "...", source_dir: "/abs/path" }
+                                 source_dir is REQUIRED — it resolves relative paths
+                                 in the YAML (like project_dir: ".").
                                Creates project, actions, and edges.
 
 POST   /reimport               Re-import specific tasks from a config
-                               Body: { dir/yaml, tasks: ["task-id", ...] }
+                               Body: { dir: "path", tasks: ["task-id", ...] }
                                Replaces specified tasks, preserves others.
+
+IMPORTANT: Always use { dir: "/absolute/path" } for imports. This is the
+safest method — it reads the YAML from disk and automatically resolves
+all relative paths correctly. Do NOT inline YAML content unless you also
+provide source_dir. Relative project_dir without source_dir will be rejected.
 
 ### Executor
 POST   /executor/pause         Pause the scheduler
@@ -108,7 +119,9 @@ activates the supervisor with failure context in its params
 (failed_action, failed_condition, failed_output).
 
 **Project**: A record with id, project_dir, model, scope. Created
-by POST /import. Required for project_id on actions.
+by POST /import. Required for project_id on actions. The project_dir
+determines the working directory for all actions AND which nix shell
+environment is used (auto-detected from flake.nix/shell.nix in that dir).
 
 ## Edge Conditions
 
@@ -123,13 +136,75 @@ by POST /import. Required for project_id on actions.
 Default edges (from config expansion): pass → next action, all
 failure conditions → first action in task. Self-loops are skipped.
 
+## How to Import a Pipeline
+
+The recommended way to import a pipeline is to point to the project
+directory on disk. The project should have a project.orca.yaml file:
+
+```bash
+# RECOMMENDED: point to the project directory
+curl -X POST http://localhost:7072/import \
+  -H 'Content-Type: application/json' \
+  -d '{"dir": "/home/user/projects/my-project"}'
+```
+
+This reads project.orca.yaml from the directory, resolves all paths
+relative to that directory (project_dir, nix detection, working
+directory for commands and agents), and creates the full action graph.
+
+Do NOT read the YAML file yourself and pass its contents inline.
+The dir-based import handles path resolution automatically and avoids
+a class of bugs where relative paths resolve against the wrong base.
+
+If you must pass YAML content directly (e.g., generating config on
+the fly), you MUST include source_dir:
+
+```bash
+# ONLY if generating YAML dynamically — include source_dir
+curl -X POST http://localhost:7072/import \
+  -H 'Content-Type: application/json' \
+  -d '{"yaml": "name: my-proj\ntasks: ...", "source_dir": "/home/user/projects/my-project"}'
+```
+
+## Writing Good Prompts
+
+The most important part of any pipeline is the prompts. Each agent
+stage should get its own tailored prompt via overrides — do NOT use
+a single shared prompt for write-tests, develop, and qa.
+
+Key rules:
+- **write-tests**: Specify test file path, exact test cases, imports.
+  Say "Do NOT implement source code."
+- **develop**: Name specific files to create/modify. Say "Read src/
+  first for conventions. Only implement what the tests require."
+- **eval**: Scope to this task's tests (`bun test test/auth.test.ts`),
+  not all tests (`bun test`).
+- **qa**: Specify how to test (curl for APIs, browser MCP tools for
+  frontends). Include server start/stop instructions.
+- **Scope strictly**: Do NOT tell agents to read roadmap files or
+  describe features beyond the current task. Agents will try to
+  build anything you mention.
+
+See /docs/guides/config-format.md for full prompt-writing guidelines
+with examples.
+
 ## Common Patterns
 
-Create a task chain:
-  curl -X POST /groups -d '{"id":"auth","template":"tdd","project_id":"my-proj","prompt":"Build auth"}'
+Import a project:
+  curl -X POST /import -d '{"dir":"/home/user/projects/my-project"}'
+
+Create a task chain with per-stage prompts:
+  curl -X POST /groups -d '{
+    "id":"auth","template":"tdd","project_id":"my-proj",
+    "overrides":{
+      "write-tests":{"prompt":"Write auth tests in test/auth.test.ts..."},
+      "develop":{"prompt":"Implement auth in src/auth.ts..."},
+      "eval":{"command":"bun test test/auth.test.ts"}
+    }
+  }'
 
 Wire tasks in sequence:
-  curl -X POST /groups -d '{"id":"api","template":"tdd","project_id":"p","prompt":"Build API","after":"auth.eval"}'
+  curl -X POST /groups -d '{"id":"api","template":"tdd","project_id":"p","prompt":"Build API","after":"auth.commit"}'
 
 Check graph state:
   curl /actions | jq '[.[] | {id, status}]'
@@ -142,10 +217,10 @@ Retry a failed action:
 
 ## Guides
 For detailed documentation on specific topics:
+- Config format & prompt writing: /docs/guides/config-format.md
+- Templates & per-stage prompts: /docs/guides/templates.md
 - Dynamic tasking: /docs/guides/dynamic-tasking.md
-- Templates: /docs/guides/templates.md
 - Supervisor & recovery: /docs/guides/supervisor.md
-- Config format: /docs/guides/config-format.md
 
 ## Full OpenAPI Spec
 /docs/openapi.yaml

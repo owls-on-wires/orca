@@ -32,9 +32,16 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
 
   // Resolve project_dir to absolute path relative to sourceDir
   const rawProjectDir = config.project_dir ?? ".";
-  const resolvedProjectDir = sourceDir
-    ? resolve(sourceDir, rawProjectDir)
-    : resolve(rawProjectDir);
+  const isAbsolute = rawProjectDir.startsWith("/");
+  if (!isAbsolute && !sourceDir) {
+    throw new Error(
+      `Cannot resolve relative project_dir "${rawProjectDir}" without sourceDir. ` +
+      `Either use an absolute project_dir in the YAML or provide sourceDir (import via 'dir' not 'yaml').`
+    );
+  }
+  const resolvedProjectDir = isAbsolute
+    ? resolve(rawProjectDir)
+    : resolve(sourceDir!, rawProjectDir);
 
   // Create project record
   const project = createProject({
@@ -444,9 +451,16 @@ export function reimportTasks(
 
   // Ensure project record exists (don't delete — that would SET NULL all action project_ids)
   const rawProjectDir = config.project_dir ?? ".";
-  const resolvedProjectDir = sourceDir
-    ? resolve(sourceDir, rawProjectDir)
-    : resolve(rawProjectDir);
+  const isAbsolute = rawProjectDir.startsWith("/");
+  if (!isAbsolute && !sourceDir) {
+    throw new Error(
+      `Cannot resolve relative project_dir "${rawProjectDir}" without sourceDir. ` +
+      `Either use an absolute project_dir in the YAML or provide sourceDir.`
+    );
+  }
+  const resolvedProjectDir = isAbsolute
+    ? resolve(rawProjectDir)
+    : resolve(sourceDir!, rawProjectDir);
 
   if (!db.getProject(config.name)) {
     db.insertProject(createProject({
