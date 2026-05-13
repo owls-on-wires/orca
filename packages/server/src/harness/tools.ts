@@ -170,7 +170,11 @@ export const bashTool: ToolExecutor = async (input, ctx) => {
       env: ctx.env,
     });
 
-    const timeoutId = setTimeout(() => proc.kill(), timeout);
+    const timeoutId = setTimeout(() => {
+      // Kill the entire process group (sh + all children including backgrounded processes)
+      // This prevents backgrounded processes from holding stdout pipes open
+      try { process.kill(-proc.pid, "SIGTERM"); } catch { proc.kill(); }
+    }, timeout);
 
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),

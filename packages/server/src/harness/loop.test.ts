@@ -167,8 +167,10 @@ describe("agent loop basics", () => {
 
     await runAgentLoop({ ...defaultOpts(), systemPrompt: "You are a test agent." });
 
-    expect(capturedRequests[0].system).toContain("You are a test agent.");
-    expect(capturedRequests[0].system).toContain("StructuredOutput");
+    const systemBlocks = capturedRequests[0].system as { type: string; text: string }[];
+    const systemText = systemBlocks.map((b: any) => b.text).join("\n");
+    expect(systemText).toContain("You are a test agent.");
+    expect(systemText).toContain("StructuredOutput");
   });
 
   test("sends user prompt as first message", async () => {

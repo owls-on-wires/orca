@@ -75,6 +75,23 @@ describe("command action", () => {
     expect(result.output.status).toBe("failed");
   });
 
+  test("exit ≥2 → error (command broken, not test failure)", async () => {
+    const action = commandAction({ params: { command: "exit 127" } });
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("error");
+    expect(result.output.status).toBe("error");
+    expect(result.output.exit_code).toBe(127);
+  });
+
+  test("exit 2 → error", async () => {
+    const action = commandAction({ params: { command: "exit 2" } });
+    const result = (await runAction(action, [], defaultOptions)) as ActionResult;
+
+    expect(result.condition).toBe("error");
+    expect(result.output.status).toBe("error");
+  });
+
   test("timeout → timeout condition", async () => {
     const action = commandAction({
       params: { command: "sleep 10", timeout: 0.1 },

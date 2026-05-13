@@ -10,6 +10,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   input_schema: object;
+  cache_control?: { type: "ephemeral" };
 }
 
 export interface ToolResult {
@@ -67,10 +68,16 @@ export interface ApiToolResultBlock {
   is_error?: boolean;
 }
 
+export interface ApiSystemBlock {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+}
+
 export interface ApiRequest {
   model: string;
   max_tokens: number;
-  system?: string;
+  system?: string | ApiSystemBlock[];
   messages: ApiMessage[];
   tools?: ToolDefinition[];
   tool_choice?: { type: "auto" | "any" | "tool"; name?: string };
@@ -118,6 +125,7 @@ export interface HarnessOptions {
   label?: string;
   abortController?: AbortController;
   onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
+  mcpServers?: Array<{ command: string; args?: string[]; env?: Record<string, string>; cwd?: string; prefix?: string }>;
 }
 
 // ---------------------------------------------------------------------------

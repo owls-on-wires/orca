@@ -6,11 +6,13 @@
 import { mkdirSync, appendFileSync } from "fs";
 import { dirname } from "path";
 import { getTool, getToolDefinitions } from "./tools";
+import { McpManager, type McpServerConfig } from "./mcp";
 import type {
   ApiMessage,
   ApiRequest,
   ApiResponse,
   ApiContentBlock,
+  ApiSystemBlock,
   ApiToolUseBlock,
   ApiToolResultBlock,
   HarnessResult,
@@ -179,9 +181,16 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
     abortSignal: options.abortController?.signal,
   };
 
-  // Build tool list: registered tools + structured output tool
+  // Connect MCP servers (if any)
+  const mcpManager = new McpManager();
+  if (options.mcpServers && options.mcpServers.length > 0) {
+    await mcpManager.connectAll(options.mcpServers);
+  }
+
+  try {
+  // Build tool list: registered tools + MCP tools + structured output tool
   const outputTool = buildOutputTool(options.outputSchema);
-  const toolDefs = [...getToolDefinitions(), outputTool.definition];
+  const toolDefs = [...getToolDefinitions(), ...mcpManager.getToolDefinitions(), outputTool.definition];
 
   // Build initial messages
   const messages: ApiMessage[] = [
@@ -211,20 +220,29 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
 
       turn++;
 
-      // Build system prompt
-      const systemParts: string[] = [];
-      if (options.systemPrompt) systemParts.push(options.systemPrompt);
-      systemParts.push(
-        "When you have completed your task, you MUST call the StructuredOutput tool with your result. " +
-        "Set status to 'passed' if successful, 'failed' if not."
+      // Build system prompt as cached content blocks
+      const systemBlocks: ApiSystemBlock[] = [];
+      if (options.systemPrompt) {
+        systemBlocks.push({ type: "text", text: options.systemPrompt });
+      }
+      systemBlocks.push({
+        type: "text",
+        text: "When you have completed your task, you MUST call the StructuredOutput tool with your result. " +
+          "Set status to 'passed' if successful, 'failed' if not.",
+        cache_control: { type: "ephemeral" },
+      });
+
+      // Mark the last tool definition for caching (caches the entire tools prefix)
+      const cachedToolDefs = toolDefs.map((t, i) =>
+        i === toolDefs.length - 1 ? { ...t, cache_control: { type: "ephemeral" as const } } : t,
       );
 
       const request: ApiRequest = {
         model,
         max_tokens: maxTokens,
-        system: systemParts.join("\n\n"),
+        system: systemBlocks,
         messages,
-        tools: toolDefs,
+        tools: cachedToolDefs,
       };
 
       const response = await callApi(request, apiKey, apiUrl, options.abortController?.signal);
@@ -233,6 +251,15 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
       totalInputTokens += response.usage.input_tokens;
       totalOutputTokens += response.usage.output_tokens;
       totalCacheReadTokens += response.usage.cache_read_input_tokens ?? 0;
+
+      logJsonl(options.logPath, label, "api_turn", {
+        turn,
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        cache_read_tokens: response.usage.cache_read_input_tokens ?? 0,
+        cache_creation_tokens: response.usage.cache_creation_input_tokens ?? 0,
+        stop_reason: response.stop_reason,
+      });
 
       // Add assistant response to conversation
       messages.push({ role: "assistant", content: response.content });
@@ -269,7 +296,7 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
           continue;
         }
 
-        // Execute regular tool
+        // Execute regular tool (check MCP servers first, then built-in tools)
         logJsonl(options.logPath, label, "tool_use", {
           tool_name: toolUse.name,
           tool_use_id: toolUse.id,
@@ -277,8 +304,18 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
         });
         options.onToolUse?.(toolUse.name, toolUse.input);
 
-        const result = await executeToolCall(toolUse, toolContext);
-        toolResults.push(result);
+        const mcpResult = await mcpManager.callTool(toolUse.name, toolUse.input);
+        if (mcpResult) {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: mcpResult.output,
+            is_error: mcpResult.isError,
+          });
+        } else {
+          const result = await executeToolCall(toolUse, toolContext);
+          toolResults.push(result);
+        }
       }
 
       // Add tool results to conversation
@@ -311,6 +348,7 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
     structured_output: structuredOutput,
     total_input_tokens: totalInputTokens,
     total_output_tokens: totalOutputTokens,
+    total_cache_read_tokens: totalCacheReadTokens,
   });
 
   return {
@@ -320,4 +358,8 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
     durationMs,
     isError,
   };
+
+  } finally {
+    mcpManager.closeAll();
+  }
 }

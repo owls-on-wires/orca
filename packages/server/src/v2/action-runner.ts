@@ -548,7 +548,7 @@ async function runCommandAction(
 
   // Build output
   const output: ActionOutput = {
-    status: timedOut ? "timeout" : exitCode === 0 ? "passed" : "failed",
+    status: timedOut ? "timeout" : exitCode === 0 ? "passed" : exitCode === 1 ? "failed" : "error",
     summary: timedOut
       ? "Command timed out"
       : exitCode === 0
@@ -572,14 +572,16 @@ async function runCommandAction(
     return { waiting: true, output };
   }
 
-  // Classify
+  // Classify: exit 0 = pass, exit 1 = fail (tests failed), exit ≥2 = error (command broken)
   let condition: EdgeCondition;
   if (timedOut) {
     condition = "timeout";
   } else if (exitCode === 0) {
     condition = "pass";
-  } else {
+  } else if (exitCode === 1) {
     condition = "fail";
+  } else {
+    condition = "error";
   }
 
   return { condition, output, cost_usd: 0, duration_ms, num_turns: 0 };

@@ -4,6 +4,8 @@
   "scripts": {
     "test": "bun test",
     "dev": "bun run src/server.ts",
+    "start:bg": "kill $(lsof -ti:3457 -sTCP:LISTEN) 2>/dev/null; nohup bun run src/server.ts > /tmp/bookmark-api.log 2>&1 & disown; sleep 1; echo started",
+    "stop": "kill $(lsof -ti:3457 -sTCP:LISTEN) 2>/dev/null; echo stopped",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
