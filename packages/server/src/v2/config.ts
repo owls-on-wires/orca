@@ -12,6 +12,11 @@ import {
   type V2TaskConfig,
 } from "./schema";
 
+/** Returns true for action types that are LLM agents (need prompts, structured output). */
+function isAgentType(type: string): boolean {
+  return type === "agent" || type === "agent-api";
+}
+
 /**
  * Parse YAML config and expand tasks into actions + edges in the database.
  * Returns the parsed config; side effect: populates DB with actions and edges.
@@ -124,7 +129,7 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
       };
 
       // Inject prompt for agent actions
-      if (typeDef.type === "agent" && task.prompt) {
+      if (isAgentType(typeDef.type) && task.prompt) {
         params.prompt = task.prompt;
       }
 
@@ -144,7 +149,7 @@ export function expandConfig(yamlString: string, db: OrcaDatabase, sourceDir?: s
       }
 
       // Validate: agent actions must have a prompt from somewhere
-      if (typeDef.type === "agent" && !params.prompt) {
+      if (isAgentType(typeDef.type) && !params.prompt) {
         throw new Error(
           `Agent action "${actionId}" has no prompt. Set prompt on the task, in the template type's params, or via overrides.`,
         );
@@ -348,7 +353,7 @@ export function expandTask(
       ...(typeDef.params ?? {}),
     };
 
-    if (typeDef.type === "agent" && task.prompt) {
+    if (isAgentType(typeDef.type) && task.prompt) {
       params.prompt = task.prompt;
     }
 
@@ -361,7 +366,7 @@ export function expandTask(
       Object.assign(params, task.overrides[actionType]);
     }
 
-    if (typeDef.type === "agent" && !params.prompt) {
+    if (isAgentType(typeDef.type) && !params.prompt) {
       throw new Error(
         `Agent action "${actionId}" has no prompt. Set prompt on the task, in the template type's params, or via overrides.`,
       );
@@ -520,7 +525,7 @@ export function reimportTasks(
         ...topLevelParams,
         ...(typeDef.params ?? {}),
       };
-      if (typeDef.type === "agent" && task.prompt) {
+      if (isAgentType(typeDef.type) && task.prompt) {
         params.prompt = task.prompt;
       }
       if (task.budget) {
@@ -531,7 +536,7 @@ export function reimportTasks(
         Object.assign(params, task.overrides[actionType]);
       }
 
-      if (typeDef.type === "agent" && !params.prompt) {
+      if (isAgentType(typeDef.type) && !params.prompt) {
         throw new Error(
           `Agent action "${actionId}" has no prompt. Set prompt on the task, in the template type's params, or via overrides.`,
         );
@@ -704,7 +709,7 @@ function resolveTarget(
             ...autoTopLevel,
             ...(typeDef.params ?? {}),
           };
-          if (typeDef.type === "agent" && task.prompt) {
+          if (isAgentType(typeDef.type) && task.prompt) {
             params.prompt = task.prompt;
           }
           if (task.budget) {

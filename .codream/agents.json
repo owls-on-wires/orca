@@ -1,0 +1,10 @@
+{
+  "agents": [
+    {
+      "id": "62256ae4-caf5-4850-8b5b-8d35e6d8de9e",
+      "name": "orca-agent",
+      "sessionId": "bd7b463d-b5aa-4929-a148-4a5a1b6765c6"
+    }
+  ],
+  "activeAgentId": null
+}

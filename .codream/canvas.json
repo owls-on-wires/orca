@@ -1,0 +1,29 @@
+[
+  {
+    "title": "Files",
+    "type": "file-tree",
+    "content": "",
+    "position": {
+      "x": 664,
+      "y": 327
+    },
+    "size": {
+      "width": 320,
+      "height": 450
+    }
+  },
+  {
+    "title": "harness.chat.md",
+    "type": "file",
+    "content": "",
+    "sourcePath": "/home/midnightmiles/Projects/orca/.codream/harness.chat.md",
+    "position": {
+      "x": 1189,
+      "y": 34
+    },
+    "size": {
+      "width": 700,
+      "height": 1124
+    }
+  }
+]

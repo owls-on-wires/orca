@@ -1,6 +1,6 @@
 // V2 type definitions and helpers
 
-export type ActionType = "agent" | "command";
+export type ActionType = "agent" | "command" | "agent-api";
 
 export type EdgeCondition =
   | "pass"

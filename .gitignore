@@ -12,3 +12,4 @@ fixtures/*/node_modules/
 fixtures/*/bun.lock
 *.db-wal
 *.db-shm
+secrets.json

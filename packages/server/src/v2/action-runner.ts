@@ -2,12 +2,13 @@
  * Action runner — executes a single action and returns a classified result.
  */
 
-import { resolve } from "path";
-import { readFileSync, existsSync } from "fs";
+import { resolve, dirname } from "path";
+import { readFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
 import { invokeSimple } from "../engine/invoke";
 import type { InvokeResult, InvokeOptions } from "../engine/invoke";
 import { applyVars } from "../templates";
 import { buildNixCommand } from "../nix";
+import { runAgentLoop } from "../harness/loop";
 import type { ScopeConfig, Toolset } from "../config/schema";
 import type { ActionConfig, ActionOutput, EdgeCondition, NixConfig } from "./schema";
 
@@ -67,6 +68,64 @@ const DEFAULT_OUTPUT_SCHEMA = {
   },
   required: ["status", "summary"],
 };
+
+// ---------------------------------------------------------------------------
+// Model name resolution (short names → API model IDs)
+// ---------------------------------------------------------------------------
+
+const MODEL_ALIASES: Record<string, string> = {
+  opus: "claude-opus-4-20250514",
+  sonnet: "claude-sonnet-4-20250514",
+  haiku: "claude-haiku-4-20250414",
+};
+
+function resolveModelId(model?: string): string {
+  if (!model) return "claude-sonnet-4-20250514";
+  return MODEL_ALIASES[model] ?? model;
+}
+
+// ---------------------------------------------------------------------------
+// Shared condition classification from structured output
+// ---------------------------------------------------------------------------
+
+function classifyResult(
+  structuredOutput: Record<string, unknown> | null,
+  isError: boolean,
+  numTurns: number,
+  maxTurns?: number,
+): { condition: EdgeCondition; output: ActionOutput } {
+  let condition: EdgeCondition;
+  let output: ActionOutput;
+
+  if (isError) {
+    if (maxTurns && numTurns >= maxTurns) {
+      condition = "max_turns";
+    } else {
+      condition = "error";
+    }
+    output = {
+      status: "failed",
+      summary: "Action failed with error",
+      ...(structuredOutput ?? {}),
+    };
+  } else {
+    const status = structuredOutput?.status as string | undefined;
+    if (status === "passed") {
+      condition = "pass";
+    } else if (status === "failed") {
+      condition = "fail";
+    } else {
+      condition = "error";
+    }
+    output = {
+      status: status ?? "unknown",
+      summary: (structuredOutput?.summary as string) ?? "",
+      ...(structuredOutput ?? {}),
+    };
+  }
+
+  return { condition, output };
+}
 
 // ---------------------------------------------------------------------------
 // Predecessor output injection
@@ -282,53 +341,76 @@ async function runAgentAction(
     env: nixEnv,
   }, options.onToolUse);
 
-  // Always extract cost/turns/duration regardless of subtype
-  const cost_usd = result.costUsd;
-  const num_turns = result.numTurns;
-  const duration_ms = result.durationMs;
+  const { condition, output } = classifyResult(
+    result.output as Record<string, unknown> | null,
+    result.isError,
+    result.numTurns,
+    maxTurns,
+  );
 
-  // Classify based on result
-  let condition: EdgeCondition;
-  let output: ActionOutput;
+  return { condition, output, cost_usd: result.costUsd, duration_ms: result.durationMs, num_turns: result.numTurns };
+}
 
-  if (result.isError) {
-    // Determine error subtype from the result
-    // The InvokeResult abstracts away subtypes — isError=true means non-success
-    // We check if it was max_turns by looking at numTurns vs maxTurns
-    if (maxTurns && num_turns >= maxTurns) {
-      condition = "max_turns";
-    } else {
-      condition = "error";
-    }
-    output = {
-      status: "failed",
-      summary: "Action failed with error",
-      ...(result.output as Record<string, unknown> ?? {}),
-    };
-  } else {
-    // Success subtype — classify from structured output
-    const structuredOutput = result.output as Record<string, unknown> | null;
-    const status = structuredOutput?.status as string | undefined;
+// ---------------------------------------------------------------------------
+// Agent-API action (direct Anthropic API, no SDK subprocess)
+// ---------------------------------------------------------------------------
 
-    if (status === "passed") {
-      condition = "pass";
-    } else if (status === "failed") {
-      condition = "fail";
-    } else {
-      // Unknown or missing status — classify as error, not fail.
-      // "fail" means the agent tried and reported failure (retry makes sense).
-      // "error" means the output was malformed or unexpected (escalate).
-      condition = "error";
-    }
+async function runAgentApiAction(
+  action: ActionConfig,
+  predecessorOutputs: PredecessorOutput[],
+  options: RunOptions,
+): Promise<ActionResult> {
+  const params = action.params;
+  const prompt = params.prompt as string;
+  const systemPrompt = params.system_prompt as string | undefined;
+  const maxTurns = params.max_turns as number | undefined;
+  const outputSchema = (params.output_schema as object | undefined) ?? DEFAULT_OUTPUT_SCHEMA;
 
-    output = {
-      status: status ?? "unknown",
-      summary: (structuredOutput?.summary as string) ?? "",
-      ...(structuredOutput ?? {}),
-    };
+  // Build full prompt with predecessor injection
+  const parts: string[] = [];
+  const predecessorPrompt = buildPredecessorPrompt(predecessorOutputs);
+  if (predecessorPrompt) {
+    parts.push(predecessorPrompt);
   }
+  parts.push(prompt);
+  const fullPrompt = parts.join("\n\n");
 
-  return { condition, output, cost_usd, duration_ms, num_turns };
+  // Resolve nix environment
+  const nixEnv = resolveNixEnv(options.projectDir, options.nix);
+
+  const result = await runAgentLoop({
+    prompt: fullPrompt,
+    systemPrompt,
+    model: resolveModelId(options.model),
+    maxTurns,
+    outputSchema,
+    cwd: resolve(options.projectDir),
+    env: nixEnv as Record<string, string> | undefined,
+    logPath: options.logPath,
+    label: action.id,
+    abortController: options.abortController,
+    onToolUse: options.onToolUse,
+  });
+
+  const { condition, output } = classifyResult(
+    result.output,
+    result.isError,
+    result.numTurns,
+    maxTurns,
+  );
+
+  return { condition, output, cost_usd: result.costUsd, duration_ms: result.durationMs, num_turns: result.numTurns };
+}
+
+// ---------------------------------------------------------------------------
+// Simple JSONL logger for command actions
+// ---------------------------------------------------------------------------
+
+function logJsonl(logPath: string | undefined, label: string, eventType: string, data: Record<string, unknown> = {}) {
+  if (!logPath) return;
+  try { mkdirSync(dirname(logPath), { recursive: true }); } catch {}
+  const record = { timestamp: new Date().toISOString(), label, event_type: eventType, ...data };
+  appendFileSync(logPath, JSON.stringify(record) + "\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +447,15 @@ async function runCommandAction(
   }
   const interpolated = applyVars(command, vars);
 
+  logJsonl(options.logPath, action.id, "command_start", {
+    command: interpolated,
+    cwd: resolve(options.projectDir),
+    timeout: timeout / 1000,
+  });
+
+  // Resolve nix environment (same as agent actions — no shell wrapping, just env vars)
+  const nixEnv = resolveNixEnv(options.projectDir, options.nix);
+
   const start = Date.now();
   let stdout = "";
   let stderr = "";
@@ -372,14 +463,11 @@ async function runCommandAction(
   let timedOut = false;
 
   try {
-    // Wrap command in nix shell (auto-detects flake.nix/shell.nix if no explicit config)
-    const baseCmd = ["sh", "-c", interpolated];
-    const cmd = buildNixCommand(resolve(options.projectDir), options.nix, baseCmd);
-
-    const proc = Bun.spawn(cmd, {
+    const proc = Bun.spawn(["sh", "-c", interpolated], {
       cwd: resolve(options.projectDir),
       stdout: "pipe",
       stderr: "pipe",
+      env: nixEnv,
     });
 
     const timeoutId = setTimeout(() => {
@@ -410,10 +498,9 @@ async function runCommandAction(
     let healthy = false;
     while (Date.now() - pollStart < waitTimeout) {
       try {
-        const waitCmd = ["sh", "-c", waitFor];
-        const wrappedWait = buildNixCommand(resolve(options.projectDir), options.nix, waitCmd);
-        const check = Bun.spawnSync(wrappedWait, {
+        const check = Bun.spawnSync(["sh", "-c", waitFor], {
           cwd: resolve(options.projectDir),
+          env: nixEnv,
         });
         if (check.exitCode === 0) {
           healthy = true;
@@ -439,6 +526,14 @@ async function runCommandAction(
     stderr: stderr.slice(0, 2000),
     exit_code: exitCode,
   };
+
+  logJsonl(options.logPath, action.id, "command_end", {
+    exit_code: exitCode,
+    timed_out: timedOut,
+    duration_ms,
+    stdout: stdout.slice(0, 2000),
+    stderr: stderr.slice(0, 2000),
+  });
 
   // Return WaitingResult if wait_for_response
   if (waitForResponse) {
@@ -469,6 +564,8 @@ export async function runAction(
 ): Promise<ActionResult | WaitingResult> {
   if (action.type === "agent") {
     return runAgentAction(action, predecessorOutputs, options);
+  } else if (action.type === "agent-api") {
+    return runAgentApiAction(action, predecessorOutputs, options);
   } else if (action.type === "command") {
     return runCommandAction(action, predecessorOutputs, options);
   } else {

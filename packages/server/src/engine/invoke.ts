@@ -222,7 +222,12 @@ export async function* invoke(
           resultNumTurns = resultMsg.num_turns ?? 0;
           resultDurationMs = resultMsg.duration_ms ?? 0;
           resultIsError = resultMsg.is_error ?? false;
-          structuredOutput = resultMsg.structured_output;
+          // Don't let spurious SDK results with null output overwrite a valid one.
+          // The SDK sometimes yields multiple result messages; only the first
+          // has structured_output populated.
+          if (resultMsg.structured_output != null || structuredOutput == null) {
+            structuredOutput = resultMsg.structured_output;
+          }
 
           log.write("invoke_end", {
             cost_usd: resultCost,
