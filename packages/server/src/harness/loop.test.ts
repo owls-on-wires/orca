@@ -374,7 +374,7 @@ describe("cost estimation", () => {
   });
 
   test("haiku pricing", () => {
-    const cost = estimateCost("claude-haiku-4-20250414", 1_000_000, 1_000_000);
+    const cost = estimateCost("claude-haiku-4-5-20251001", 1_000_000, 1_000_000);
     expect(cost).toBe(0.80 + 4.0);
   });
 

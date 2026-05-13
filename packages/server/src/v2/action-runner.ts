@@ -7,7 +7,7 @@ import { readFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
 import { invokeSimple } from "../engine/invoke";
 import type { InvokeResult, InvokeOptions } from "../engine/invoke";
 import { applyVars } from "../templates";
-import { buildNixCommand } from "../nix";
+import { buildNixCommand, buildNixScriptCommand } from "../nix";
 import { runAgentLoop } from "../harness/loop";
 import type { ScopeConfig, Toolset } from "../config/schema";
 import type { ActionConfig, ActionOutput, EdgeCondition, NixConfig } from "./schema";
@@ -74,13 +74,13 @@ const DEFAULT_OUTPUT_SCHEMA = {
 // ---------------------------------------------------------------------------
 
 const MODEL_ALIASES: Record<string, string> = {
-  opus: "claude-opus-4-20250514",
-  sonnet: "claude-sonnet-4-20250514",
-  haiku: "claude-haiku-4-20250414",
+  opus: "claude-opus-4-6",
+  sonnet: "claude-sonnet-4-6",
+  haiku: "claude-haiku-4-5-20251001",
 };
 
 function resolveModelId(model?: string): string {
-  if (!model) return "claude-sonnet-4-20250514";
+  if (!model) return "claude-sonnet-4-6";
   return MODEL_ALIASES[model] ?? model;
 }
 
@@ -149,43 +149,47 @@ export function buildPredecessorPrompt(predecessors: PredecessorOutput[]): strin
 }
 
 // ---------------------------------------------------------------------------
-// Nix environment resolution for agent actions
+// Nix environment session for agent actions
 // ---------------------------------------------------------------------------
 
-let nixEnvCache: Map<string, Record<string, string>> = new Map();
+export interface NixEnvSession {
+  env: Record<string, string>;
+  close: () => void;
+}
 
 /** Exported for testing */
-export function clearNixEnvCache() { nixEnvCache.clear(); }
+export function clearNixEnvCache() { /* no-op, cache removed */ }
 
-export function resolveNixEnv(projectDir: string, nixConfig?: NixConfig): Record<string, string | undefined> | undefined {
+/**
+ * Open a nix environment session for the given project directory.
+ *
+ * Spawns a fresh nix-shell/develop to capture env vars, then spawns a
+ * keepalive process (`sleep`) in the same nix env so that TMPDIR and
+ * other session-specific paths remain valid. Call close() to kill the
+ * keepalive when the agent action finishes.
+ *
+ * Returns null if no nix environment is detected.
+ */
+export function openNixEnvSession(projectDir: string, nixConfig?: NixConfig): NixEnvSession | null {
+  const dir = resolve(projectDir);
+
   if (!nixConfig || nixConfig.enable === false) {
-    // Auto-detect: check if project has flake.nix or shell.nix
-    const dir = resolve(projectDir);
     const hasFlake = existsSync(`${dir}/flake.nix`);
     const hasShell = existsSync(`${dir}/shell.nix`);
     const hasDefault = existsSync(`${dir}/default.nix`);
-    if (!hasFlake && !hasShell && !hasDefault) return undefined;
-    // Auto-detected — proceed with undefined nixConfig (buildNixCommand handles auto-detect)
+    if (!hasFlake && !hasShell && !hasDefault) return null;
   }
 
-  const cacheKey = resolve(projectDir);
-  if (nixEnvCache.has(cacheKey)) return nixEnvCache.get(cacheKey)!;
-
   try {
-    const envCmd = buildNixCommand(resolve(projectDir), nixConfig, ["env"]);
-    // If buildNixCommand returns just ["env"], no nix wrapping — skip
-    if (envCmd.length === 1 && envCmd[0] === "env") return undefined;
+    // 1. Capture env vars synchronously
+    const envCmd = buildNixCommand(dir, nixConfig, ["env"]);
+    if (envCmd.length === 1 && envCmd[0] === "env") return null;
 
-    const proc = Bun.spawnSync(envCmd, {
-      cwd: resolve(projectDir),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    if (proc.exitCode !== 0) return undefined;
+    const envProc = Bun.spawnSync(envCmd, { cwd: dir, stdout: "pipe", stderr: "pipe" });
+    if (envProc.exitCode !== 0) return null;
 
     const env: Record<string, string> = {};
-    const output = new TextDecoder().decode(proc.stdout);
+    const output = new TextDecoder().decode(envProc.stdout);
     for (const line of output.split("\n")) {
       const eq = line.indexOf("=");
       if (eq > 0) {
@@ -193,11 +197,27 @@ export function resolveNixEnv(projectDir: string, nixConfig?: NixConfig): Record
       }
     }
 
-    nixEnvCache.set(cacheKey, env);
-    return env;
+    // 2. Spawn keepalive in the same nix env to hold TMPDIR alive
+    const keepaliveCmd = buildNixCommand(dir, nixConfig, ["sleep", "86400"]);
+    const keepalive = Bun.spawn(keepaliveCmd, {
+      cwd: dir, stdout: "ignore", stderr: "ignore",
+    });
+
+    return {
+      env,
+      close: () => { try { keepalive.kill(); } catch {} },
+    };
   } catch {
-    return undefined;
+    return null;
   }
+}
+
+/** Convenience wrapper — opens a session, returns env, closes immediately. */
+export function resolveNixEnv(projectDir: string, nixConfig?: NixConfig): Record<string, string | undefined> | undefined {
+  const session = openNixEnvSession(projectDir, nixConfig);
+  if (!session) return undefined;
+  session.close();
+  return session.env;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,9 +343,10 @@ async function runAgentAction(
 
   const fullPrompt = parts.join("\n\n");
 
-  // Resolve nix environment for the project (cached per projectDir)
-  const nixEnv = resolveNixEnv(options.projectDir, options.nix);
+  // Open nix env session — keeps TMPDIR alive for the duration of the agent
+  const nixSession = openNixEnvSession(options.projectDir, options.nix);
 
+  try {
   const result = await invokeWithWatchdog({
     prompt: fullPrompt,
     projectDir: resolve(options.projectDir),
@@ -338,7 +359,7 @@ async function runAgentAction(
     systemPrompt,
     label: action.id,
     abortController: options.abortController,
-    env: nixEnv,
+    env: nixSession?.env,
   }, options.onToolUse);
 
   const { condition, output } = classifyResult(
@@ -349,6 +370,9 @@ async function runAgentAction(
   );
 
   return { condition, output, cost_usd: result.costUsd, duration_ms: result.durationMs, num_turns: result.numTurns };
+  } finally {
+    nixSession?.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,31 +399,35 @@ async function runAgentApiAction(
   parts.push(prompt);
   const fullPrompt = parts.join("\n\n");
 
-  // Resolve nix environment
-  const nixEnv = resolveNixEnv(options.projectDir, options.nix);
+  // Open nix env session — keeps TMPDIR alive for the duration of the agent
+  const nixSession = openNixEnvSession(options.projectDir, options.nix);
 
-  const result = await runAgentLoop({
-    prompt: fullPrompt,
-    systemPrompt,
-    model: resolveModelId(options.model),
-    maxTurns,
-    outputSchema,
-    cwd: resolve(options.projectDir),
-    env: nixEnv as Record<string, string> | undefined,
-    logPath: options.logPath,
-    label: action.id,
-    abortController: options.abortController,
-    onToolUse: options.onToolUse,
-  });
+  try {
+    const result = await runAgentLoop({
+      prompt: fullPrompt,
+      systemPrompt,
+      model: resolveModelId(options.model),
+      maxTurns,
+      outputSchema,
+      cwd: resolve(options.projectDir),
+      env: nixSession?.env,
+      logPath: options.logPath,
+      label: action.id,
+      abortController: options.abortController,
+      onToolUse: options.onToolUse,
+    });
 
-  const { condition, output } = classifyResult(
-    result.output,
-    result.isError,
-    result.numTurns,
-    maxTurns,
-  );
+    const { condition, output } = classifyResult(
+      result.output,
+      result.isError,
+      result.numTurns,
+      maxTurns,
+    );
 
-  return { condition, output, cost_usd: result.costUsd, duration_ms: result.durationMs, num_turns: result.numTurns };
+    return { condition, output, cost_usd: result.costUsd, duration_ms: result.durationMs, num_turns: result.numTurns };
+  } finally {
+    nixSession?.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -453,8 +481,9 @@ async function runCommandAction(
     timeout: timeout / 1000,
   });
 
-  // Resolve nix environment (same as agent actions — no shell wrapping, just env vars)
-  const nixEnv = resolveNixEnv(options.projectDir, options.nix);
+  // Build nix-wrapped command via temp script (fresh nix shell per command, no stale env)
+  const nixScript = buildNixScriptCommand(resolve(options.projectDir), interpolated, options.nix);
+  const argv = nixScript ? nixScript.argv : ["sh", "-c", interpolated];
 
   const start = Date.now();
   let stdout = "";
@@ -463,11 +492,10 @@ async function runCommandAction(
   let timedOut = false;
 
   try {
-    const proc = Bun.spawn(["sh", "-c", interpolated], {
+    const proc = Bun.spawn(argv, {
       cwd: resolve(options.projectDir),
       stdout: "pipe",
       stderr: "pipe",
-      env: nixEnv,
     });
 
     const timeoutId = setTimeout(() => {
@@ -488,6 +516,8 @@ async function runCommandAction(
   } catch (e) {
     exitCode = 1;
     stderr = String(e);
+  } finally {
+    nixScript?.cleanup();
   }
 
   const duration_ms = Date.now() - start;
@@ -498,10 +528,12 @@ async function runCommandAction(
     let healthy = false;
     while (Date.now() - pollStart < waitTimeout) {
       try {
-        const check = Bun.spawnSync(["sh", "-c", waitFor], {
+        const waitScript = buildNixScriptCommand(resolve(options.projectDir), waitFor, options.nix);
+        const waitArgv = waitScript ? waitScript.argv : ["sh", "-c", waitFor];
+        const check = Bun.spawnSync(waitArgv, {
           cwd: resolve(options.projectDir),
-          env: nixEnv,
         });
+        waitScript?.cleanup();
         if (check.exitCode === 0) {
           healthy = true;
           break;

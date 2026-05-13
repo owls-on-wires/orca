@@ -318,7 +318,7 @@ describe("resolveNixEnv", () => {
     // Either way, it shouldn't throw
   });
 
-  test("caches results per projectDir", () => {
+  test("returns fresh env on each call (no stale cache)", () => {
     const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nix-"));
     writeFileSync(join(tmpDir, "shell.nix"), `
       { pkgs ? import <nixpkgs> {} }:
@@ -326,8 +326,13 @@ describe("resolveNixEnv", () => {
     `);
     const r1 = resolveNixEnv(tmpDir);
     const r2 = resolveNixEnv(tmpDir);
-    // Same reference (cached)
-    expect(r1).toBe(r2);
+    // Both should return valid envs with PATH
+    if (r1 && r2) {
+      expect(r1.PATH).toBeDefined();
+      expect(r2.PATH).toBeDefined();
+      // Fresh calls — not the same reference
+      expect(r1).not.toBe(r2);
+    }
   });
 
   test("passes env to invokeSimple for agent actions", async () => {

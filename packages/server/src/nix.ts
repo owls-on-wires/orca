@@ -3,8 +3,9 @@
  * nix shell/develop invocation based on config and auto-detection.
  */
 
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, unlinkSync } from "fs";
 import { join, resolve } from "path";
+import { tmpdir } from "os";
 import type { NixConfig } from "./config/schema";
 
 export interface NixFileChecker {
@@ -68,4 +69,65 @@ export function buildNixCommand(
 
   // 6. No nix
   return innerCmd;
+}
+
+// ---------------------------------------------------------------------------
+// Robust nix command execution via temp script files
+// ---------------------------------------------------------------------------
+
+let scriptCounter = 0;
+
+/**
+ * Build argv to run a shell command string inside a nix environment.
+ *
+ * Writes the command to a temp script file to avoid all shell quoting issues.
+ * The script file must be cleaned up by the caller via the returned cleanup function.
+ *
+ * Returns { argv, cleanup } or null if no nix environment detected.
+ */
+export function buildNixScriptCommand(
+  repoDir: string,
+  command: string,
+  nixConfig?: NixConfig,
+  checker: NixFileChecker = defaultChecker,
+): { argv: string[]; cleanup: () => void } | null {
+  if (nixConfig?.enable === false) return null;
+
+  const dir = resolve(repoDir);
+  const scriptPath = join(tmpdir(), `orca-nix-${process.pid}-${++scriptCounter}.sh`);
+  writeFileSync(scriptPath, command, { mode: 0o755 });
+  const cleanup = () => { try { unlinkSync(scriptPath); } catch {} };
+
+  // 1. Explicit flake
+  if (nixConfig?.flake !== undefined) {
+    const flakePath = nixConfig.flake === true ? dir : resolve(dir, nixConfig.flake as string);
+    return { argv: ["nix", "develop", flakePath, "--command", "sh", scriptPath], cleanup };
+  }
+
+  // 2. Explicit packages
+  if (nixConfig?.packages && nixConfig.packages.length > 0) {
+    const pkgArgs = nixConfig.packages.map((pkg) => `nixpkgs#${pkg}`);
+    return { argv: ["nix", "shell", ...pkgArgs, "--command", "sh", scriptPath], cleanup };
+  }
+
+  // 3. Auto-detect flake.nix
+  if (checker.exists(join(dir, "flake.nix"))) {
+    return { argv: ["nix", "develop", dir, "--command", "sh", scriptPath], cleanup };
+  }
+
+  // 4. Auto-detect shell.nix
+  const shellNix = join(dir, "shell.nix");
+  if (checker.exists(shellNix)) {
+    return { argv: ["nix-shell", shellNix, "--run", scriptPath], cleanup };
+  }
+
+  // 5. Auto-detect default.nix
+  const defaultNix = join(dir, "default.nix");
+  if (checker.exists(defaultNix)) {
+    return { argv: ["nix-shell", defaultNix, "--run", scriptPath], cleanup };
+  }
+
+  // No nix
+  cleanup();
+  return null;
 }
