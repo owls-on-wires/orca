@@ -415,6 +415,7 @@ async function runAgentApiAction(
       label: action.id,
       abortController: options.abortController,
       onToolUse: options.onToolUse,
+      scope: options.scope,
     });
 
     const { condition, output } = classifyResult(

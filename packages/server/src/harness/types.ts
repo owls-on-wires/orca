@@ -126,6 +126,7 @@ export interface HarnessOptions {
   abortController?: AbortController;
   onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
   mcpServers?: Array<{ command: string; args?: string[]; env?: Record<string, string>; cwd?: string; prefix?: string }>;
+  scope?: { writable?: string[]; readable?: string[] };
 }
 
 // ---------------------------------------------------------------------------

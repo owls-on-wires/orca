@@ -1031,6 +1031,7 @@ export function startServer(options: ServerOptions = {}) {
 
   const server = Bun.serve({
     port,
+    idleTimeout: 0,
     fetch: async (req) => {
       // Handle CORS preflight
       if (req.method === "OPTIONS") {

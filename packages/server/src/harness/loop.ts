@@ -7,6 +7,7 @@ import { mkdirSync, appendFileSync } from "fs";
 import { dirname } from "path";
 import { getTool, getToolDefinitions } from "./tools";
 import { McpManager, type McpServerConfig } from "./mcp";
+import { checkToolUse, scopeSystemPrompt } from "../scope";
 import type {
   ApiMessage,
   ApiRequest,
@@ -225,10 +226,15 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
       if (options.systemPrompt) {
         systemBlocks.push({ type: "text", text: options.systemPrompt });
       }
+      if (options.scope && (options.scope.writable?.length || options.scope.readable?.length)) {
+        systemBlocks.push({ type: "text", text: scopeSystemPrompt(options.scope) });
+      }
       systemBlocks.push({
         type: "text",
-        text: "When you have completed your task, you MUST call the StructuredOutput tool with your result. " +
-          "Set status to 'passed' if successful, 'failed' if not.",
+        text: `Your working directory is ${options.cwd}. All tool calls (Read, Write, Edit, Bash, Glob, Grep) ` +
+          `execute relative to this directory. Do NOT cd to other directories. ` +
+          `When you have completed your task, you MUST call the StructuredOutput tool with your result. ` +
+          `Set status to 'passed' if successful, 'failed' if not.`,
         cache_control: { type: "ephemeral" },
       });
 
@@ -294,6 +300,26 @@ export async function runAgentLoop(options: HarnessOptions): Promise<HarnessResu
             content: "Result recorded.",
           });
           continue;
+        }
+
+        // Scope enforcement — block file access outside allowed patterns
+        if (options.scope) {
+          const violation = checkToolUse(options.scope, toolUse.name, toolUse.input, options.cwd);
+          if (violation) {
+            logJsonl(options.logPath, label, "scope_violation", {
+              tool_name: toolUse.name,
+              file_path: violation.filePath,
+              scope_type: violation.scopeType,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: `Scope violation: ${violation.scopeType} access to ${violation.filePath} not allowed. ` +
+                `Allowed ${violation.scopeType} patterns: ${violation.allowedPatterns.join(", ")}`,
+              is_error: true,
+            });
+            continue;
+          }
         }
 
         // Execute regular tool (check MCP servers first, then built-in tools)
