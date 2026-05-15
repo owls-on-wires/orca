@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "fs";
+import { dirname } from "path";
 import type {
   ActionConfig,
   ActionStatus,
@@ -122,6 +124,9 @@ export class OrcaDatabase {
   private db: Database;
 
   constructor(dbPath: string = ".orca/orca.db") {
+    if (dbPath !== ":memory:") {
+      mkdirSync(dirname(dbPath), { recursive: true });
+    }
     this.db = new Database(dbPath, { create: true });
     this.db.exec(SCHEMA);
   }
