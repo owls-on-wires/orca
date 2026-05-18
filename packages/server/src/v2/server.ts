@@ -222,6 +222,7 @@ async function handleImport(
     edgeCount += state.db.getEdgesFrom(a.id).length;
   }
 
+  if (executorWorker) sendToWorker({ type: "kick" });
   return json({ actions: actionIds, edges: edgeCount });
 }
 
@@ -262,6 +263,7 @@ async function handleReimport(
 
   try {
     const result = reimportTasks(yamlString, state.db, taskIds, sourceDir);
+    if (executorWorker) sendToWorker({ type: "kick" });
     return json(result);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -477,6 +479,7 @@ async function handleCreateAction(
   });
 
   state.db.insertAction(action);
+  if (executorWorker) sendToWorker({ type: "kick" });
   return json(action, 201);
 }
 
@@ -576,6 +579,7 @@ function handleRetry(
     completed_at: null,
   });
 
+  if (executorWorker) sendToWorker({ type: "kick" });
   return json({ status: "pending" });
 }
 
@@ -648,6 +652,7 @@ async function handleBulkUpdate(
   if (body.status !== undefined) updates.status = body.status as ActionStatus;
 
   const count = state.db.updateActionsByTag(tag, updates);
+  if (executorWorker) sendToWorker({ type: "kick" });
   return json({ updated: count });
 }
 

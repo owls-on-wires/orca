@@ -55,8 +55,10 @@ export function buildNixCommand(
     return ["nix", "develop", repoDir, "--command", ...innerCmd];
   }
 
-  // 4. Auto-detect shell.nix
-  const shellNix = join(repoDir, "shell.nix");
+  // 4. Explicit shell path or auto-detect shell.nix
+  const shellNix = nixConfig?.shell
+    ? resolve(repoDir, nixConfig.shell)
+    : join(repoDir, "shell.nix");
   if (checker.exists(shellNix)) {
     return ["nix-shell", shellNix, "--run", innerCmd.join(" ")];
   }
@@ -115,8 +117,10 @@ export function buildNixScriptCommand(
     return { argv: ["nix", "develop", dir, "--command", "sh", scriptPath], cleanup };
   }
 
-  // 4. Auto-detect shell.nix
-  const shellNix = join(dir, "shell.nix");
+  // 4. Explicit shell path or auto-detect shell.nix
+  const shellNix = nixConfig?.shell
+    ? resolve(dir, nixConfig.shell)
+    : join(dir, "shell.nix");
   if (checker.exists(shellNix)) {
     return { argv: ["nix-shell", shellNix, "--run", scriptPath], cleanup };
   }

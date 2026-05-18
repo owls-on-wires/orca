@@ -103,6 +103,7 @@ export interface V2TaskConfig {
 export interface NixConfig {
   enable?: boolean;
   flake?: boolean | string;
+  shell?: string;
   packages?: string[];
 }
 

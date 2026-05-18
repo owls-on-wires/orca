@@ -242,6 +242,7 @@ export interface LiveReloadConfig {
 export interface NixConfig {
   enable?: boolean;            // default true, set false to disable
   flake?: boolean | string;    // true = repo root, string = path
+  shell?: string;              // explicit path to shell.nix (relative to project_dir)
   packages?: string[];         // nixpkgs for nix shell -p
 }
 
