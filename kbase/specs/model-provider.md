@@ -4,7 +4,7 @@ type: spec
 status: authoritative
 updated: 2026-06-30
 applies_to: [engine, agent-runtime, executor, supervisor]
-related: [decision-0004-independent-model-agnostic-harness, decision-0005-layer-a-direct-provider-sdks, vision-features, vision-thesis, principle-no-runtime-deps, architecture-current-state]
+related: [decision-0004-independent-model-agnostic-harness, decision-0005-layer-a-direct-provider-sdks, spec-tui, vision-features, vision-thesis, principle-no-runtime-deps, architecture-current-state]
 ---
 
 # Spec: Model-provider abstraction
@@ -82,6 +82,22 @@ Shared type vocabulary (provider-neutral): `ModelMessage`, `ToolSchema`,
   (`invoke.ts:116-120`) with Orca's own base prompt; drop
   `settingSources: ["user","project","local"]` (`invoke.ts:171`, Claude Code
   settings) in favor of `.orca` declarative settings.
+
+## Progress emissions
+
+The agent loop surfaces a stream of events per action — already the shape of
+`invoke()`'s `AsyncGenerator<InvokeEvent>` (text / tool_use / result). Beyond the
+final result, an action may **emit** intermediate progress messages, and may do so
+multiple times during a run. Whether an action emits to the conversation braid — and
+how often — is a **per-action policy** (foreground vs. background), decided by the
+agent/template, not the harness (see [[spec-tui]]'s braid model). The runtime must:
+
+- tag every emission with its **source action/node** so the consumer (the TUI braid)
+  can correlate and route it;
+- carry an **emit policy** on the action, so a silent action updates only the circuit
+  / telemetry while a chatty one narrates progress into the braid;
+- keep emissions **provider-independent** — they are Layer-B events, not tied to any
+  provider's streaming format.
 
 ## Model selection
 

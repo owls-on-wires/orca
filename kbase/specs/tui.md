@@ -39,6 +39,37 @@ in the same instant. Converse to mutate; watch the mutation land.
 - **Input never blocks on the executor.** Actions stream while the user types — the
   decoupling of [[vision-thesis]] made literal.
 
+## Interaction model: the non-blocking braid
+
+Messages are **non-blocking**. Sending one never freezes the input; the user keeps
+typing and steering while work proceeds (POST → the daemon returns immediately;
+everything else arrives as async SSE events).
+
+The conversation is a **braid**, not a turn-by-turn transcript. Messages arrive from
+**different agents at any time** — the L3 primary agent, L2 supervisors, and L0
+action agents — and are appended to the shared history as they come, each tagged
+with its source. The user reads the braid like a multi-participant activity feed.
+
+A message is not limited to a single "response." **An action can emit multiple times
+during its run** — progress updates, intermediate findings, a final result. Whether
+an action emits at all, and how often, is **the agent's choice**:
+
+- An agent that **emits** narrates its progress into the braid (foreground feel).
+- An agent that **stays silent** runs in the background, updating only the circuit
+  pane and producing its result without cluttering the conversation.
+
+This makes **background-vs-foreground a per-action, configurable behavior** rather
+than a global mode — chattiness is decided by the agent (and its template/policy),
+not by the harness. The circuit pane stays the structured, spatial view of state;
+the braid is the human-readable narration layered over it.
+
+Design notes (open surface): async emissions must stay **correlated to their source**
+(tag + jump-to-origin) or the braid becomes unreadable; messages that **require the
+user** (approval, a stuck supervisor, a clarifying question) must be distinguishable
+from ambient progress and not lost in the scroll — likely a separate attention queue.
+The **displayed braid is not identical to any one agent's context window**: what the
+human reads is the full feed; what an agent re-reads is curated.
+
 ## Layout (adaptive)
 
 Wide terminals: three regions — conversation + input (left); circuit (top-right)

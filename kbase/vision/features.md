@@ -23,7 +23,8 @@ Aspirational feature set (migrated from the former `goal-features.md`).
 - **Local- and cloud-native agent.** Opinionated default tool choices and
   environment-dependent behavior: the agent decides (considering user preferences),
   for a given task, whether to run locally or on a VPS, and which tools to use
-  (Docker, ngrok, …).
+  (Docker, ngrok, …). See [[vision-cloud-native-execution]] for how placement is
+  decided.
 - **Runtime data collection.** All runtime activity / harness state is recorded so
   it can be analyzed.
 - **Automatic reflection.** In a project, the agent routinely analyzes its
