@@ -4,7 +4,7 @@ type: spec
 status: authoritative
 updated: 2026-06-30
 applies_to: [engine, agent-runtime, executor, supervisor]
-related: [decision-0004-independent-model-agnostic-harness, vision-features, vision-thesis, principle-no-runtime-deps, architecture-current-state]
+related: [decision-0004-independent-model-agnostic-harness, decision-0005-layer-a-direct-provider-sdks, vision-features, vision-thesis, principle-no-runtime-deps, architecture-current-state]
 ---
 
 # Spec: Model-provider abstraction
@@ -40,6 +40,13 @@ means Orca takes over that loop and abstracts only inference beneath it.
 The model-provider abstraction is Layer A; the bulk of the *work* is Layer B.
 
 ## Layer A — the `ModelProvider` interface
+
+**Implementation decided** ([[decision-0005-layer-a-direct-provider-sdks]]): direct
+official provider SDKs (`@anthropic-ai/sdk`, `openai`), one adapter file per
+provider behind this interface, dispatched by model-id prefix; reuse the `openai`
+SDK with alternate `baseURL` to absorb OpenAI-compatible providers. Raw-fetch-first
+per provider is permitted (same seam, zero lock-in); a hosted gateway is opt-in
+only, never the default.
 
 A provider adapter must implement roughly:
 
@@ -106,9 +113,22 @@ capabilities.
 2. An agent action completes a multi-turn, tool-using run via the Orca-owned loop +
    `AnthropicProvider`, **with no `claude` binary on PATH**; scope violations still
    deny; `InvokeResult` (output, cost, turns) is populated; structured output
-   validates.
-3. The same action runs unchanged on a second provider via a provider-prefixed
-   model id; cost is computed from token usage for both.
+   validates. **Streamed tool-arg accumulation is unit-tested** (Anthropic
+   `input_json_delta` by content-block index, parsed at `content_block_stop`) — the
+   classic bug source.
+   - Cost is computed from **raw** usage fields incl. the cache split
+     (`cache_creation`/`cache_read`), losslessly, against Orca's price table.
+   - Structured output uses Anthropic's **forced output-tool**; Layer B explicitly
+     decides which turn is the "final answer" turn (you can't force a synthetic
+     output tool while real tools are still in play).
+3. The same action runs unchanged on a second provider (OpenAI-family) via a
+   provider-prefixed model id; cost is computed from token usage for both.
+   - **Message-shape translation** handled (Anthropic tool_use/tool_result content
+     blocks vs OpenAI `role:"tool"` keyed by `tool_call_id`); OpenAI tool-arg
+     fragments accumulate by tool index (name only in the first fragment).
+   - OpenAI structured output uses strict `response_format: json_schema`; streaming
+     usage requires `stream_options:{include_usage:true}`. The normalized `Usage`
+     type tolerates asymmetry (`cacheWrite` optional/zero for OpenAI).
 4. `@anthropic-ai/claude-agent-sdk` and `findClaudeExecutable()` are gone; a circuit
    runs two actions on two different models in one build.
 
@@ -119,10 +139,10 @@ model, or the REST/SSE surface. This spec is strictly the agent-runtime substrat
 
 ## Open design surface
 
-- **Build vs adopt the inference layer.** Implement provider adapters directly, or
-  adopt a model-agnostic inference SDK (e.g. Vercel AI SDK) as Layer A while Orca
-  keeps Layer B? Either is compatible with [[principle-no-runtime-deps]] (bundled
-  lib, not an external harness) — decide and record as an ADR.
+- ~~Build vs adopt the inference layer.~~ **Resolved** by
+  [[decision-0005-layer-a-direct-provider-sdks]]: direct provider SDKs behind
+  `ModelProvider`, raw-fetch-first permitted, gateway opt-in only.
 - **Session/context representation** that survives restart and resume.
 - **Tool-call & structured-output parity** across providers with different native
-  capabilities (normalize vs degrade).
+  capabilities (normalize vs degrade) — direction set in the criteria above, but the
+  general normalize-vs-degrade policy for future providers is still open.
