@@ -2,6 +2,23 @@
 
 Declarative build orchestrator for Claude Code agents. Compiled TypeScript binary — no Python, no runtime dependencies.
 
+## Knowledge Base
+
+Project knowledge — goals, principles, requirements, decisions, and open design
+questions — lives in `kbase/`. **Before building or redesigning any subsystem,
+consult it.** Start at `kbase/INDEX.md` (the manifest) and `kbase/README.md` (how
+it's organized).
+
+- `kbase/principles/` — non-negotiable invariants. Respect them.
+- `kbase/decisions/` — settled choices (ADRs). Don't re-litigate these.
+- `kbase/open-questions/` — unresolved forks. Don't guess in these areas; surface them.
+- `kbase/specs/` & `kbase/architecture/` — what to build, and how it works today.
+- `kbase/vision/` & `kbase/explorations/` — direction and brainstorms; not authoritative, don't build on them blindly.
+
+Each doc's frontmatter `status` says how much to trust it (`authoritative` >
+`proposed` > `exploratory`). When you change code, update the matching
+`kbase/architecture/` doc; when you resolve an open question, add an ADR.
+
 ## Development
 
 ```bash

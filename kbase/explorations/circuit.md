@@ -1,3 +1,18 @@
+---
+id: exploration-circuit
+type: exploration
+status: exploratory
+updated: 2026-06-30
+applies_to: [whole-system]
+related: [vision-thesis, vision-control-hierarchy]
+---
+
+> **Exploratory brainstorm — not authoritative.** Settled ideas from this doc have
+> been promoted to `kbase/principles/`, `kbase/vision/`, and
+> `kbase/open-questions/`. Treat anything here that isn't promoted as idea-space,
+> not a spec. This remains the canonical narrative; the promoted docs are the
+> citeable, trust-bearing version.
+
 # Orca as a Circuit — Design Brainstorm
 
 A conversational harness that designs, runs, and supervises a durable task graph.
