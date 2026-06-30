@@ -7,6 +7,10 @@ updated: 2026-06-30
 
 # kbase index
 
+**[`roadmap.md`](./roadmap.md)** — phased plan from current state to a first working
+version, with a runnable verification gate per phase (proposed).
+
+
 Manifest of the knowledge base — one line per doc. Trust level by `status`:
 `authoritative` / `accepted` > `proposed` > `descriptive` / `open` / `exploratory`.
 This file can be regenerated from doc frontmatter. See [`README.md`](./README.md)
