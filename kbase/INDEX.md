@@ -28,6 +28,7 @@ for conventions.
 - `decisions/0001-reify-plan-as-durable-graph.md` — the circuit architecture.
 - `decisions/0002-kbase-structure.md` — this knowledge base's own design.
 - `decisions/0003-tui-first-ui-substrate.md` — TUI first; web/multiplexer deferred.
+- `decisions/0004-independent-model-agnostic-harness.md` — independent, model-agnostic; drop Claude Code dependency.
 
 ## Architecture (descriptive — verify against code)
 - `architecture/current-state.md` — orca v2 vs. the six missing pieces (as of 2026-06-30).

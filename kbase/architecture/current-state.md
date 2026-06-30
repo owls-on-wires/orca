@@ -25,6 +25,16 @@ SQLite-backed action/edge graph, GraphDelta mutation API, supervisor-on-failure
 escalation, scope glob matching, pause/resume, SSE streaming, and a REST surface
 designed for an LLM to drive (`v2/docs/llms.txt`).
 
+## Vision gap: still built on Claude Code
+
+The agent runtime today **depends on Claude Code**: `engine/invoke.ts:62` resolves
+the Claude Code executable from PATH (throws "Install Claude Code first") and
+`:100` drives it via `@anthropic-ai/claude-agent-sdk` (a dependency in
+`package.json` and `packages/server/package.json`). This contradicts the committed
+direction in [[decision-0004-independent-model-agnostic-harness]] — Orca becoming an
+independent, model-agnostic harness. The model-provider abstraction that closes this
+gap is not yet built; vision leads, this descriptive doc trails.
+
 ## Status against the six missing pieces (from `explorations/circuit.md`)
 
 | # | Piece | Status | Evidence |
