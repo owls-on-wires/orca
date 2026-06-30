@@ -14,6 +14,12 @@ globally-inconsistent decisions).
 
 - **Circuit** — the durable, self-modifying dataflow graph of actions and edges
   that *is* the plan. Lives in SQLite.
+- **Loop** — a feedback cycle in the circuit (e.g. edit→evaluate→analyze→edit) that
+  repeats until a closing condition is met, with an escape for when it stalls. A
+  linear step is just a loop that runs once.
+- **Loopcraft** — the agent's central skill: constructing the right loops for a goal
+  (what each cycle does, what closes it, what escapes it) and wiring them into a
+  circuit that reaches it. See [[vision-thesis]].
 - **Action** — a node; an agent or command that does work (L0).
 - **Edge** — a directed link between actions that routes on a condition.
 - **Condition** — the fixed edge vocabulary today: `pass | fail | max_turns |

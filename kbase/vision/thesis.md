@@ -4,7 +4,7 @@ type: vision
 status: authoritative
 updated: 2026-06-30
 applies_to: [whole-system]
-related: [vision-control-hierarchy, vision-features, spec-tui, principle-gate-before-reifying, principle-unify-primary-and-supervisor, decision-0001-reify-plan-as-durable-graph]
+related: [vision-control-hierarchy, vision-features, vision-cloud-native-execution, spec-tui, principle-unify-primary-and-supervisor, principle-legible-circuits-not-programs, principle-no-runtime-deps, decision-0001-reify-plan-as-durable-graph]
 ---
 
 # Thesis: build the machine, don't just plan
@@ -31,42 +31,68 @@ them — or is a threat to one:
 When weighing any design choice, ask which of these four it advances and which it
 threatens.
 
-## What Orca is, and how it works
+## What Orca is
 
-Orca is an **independent agentic coding tool** — a harness in the lineage of
-OpenCode or PI, not a layer on top of Claude Code, and **model-agnostic**: it can
-drive different kinds of models, choosing per task rather than being bound to one
-provider. Instead of planning work inside a context window and executing it
-linearly, it **reifies the plan as a durable, self-modifying circuit** — a graph of
-actions and typed edges in SQLite that runs asynchronously. The plan stops being
-ephemeral thinking and becomes a first-class artifact you can pause, edit, resume,
-and watch.
+Orca is an agentic coding harness that doesn't just *plan* work — it **builds a
+machine that does the work and watches it run.** Instead of holding a plan in a chat
+window and executing it step by step, Orca turns the plan into a **circuit**: a
+durable graph of actions and typed edges, stored on disk, that executes
+asynchronously. The plan becomes a real artifact you can pause, edit, resume, and
+watch — and because thinking and doing are decoupled, you stay in conversation while
+the work runs underneath you.
 
-You drive it by talking. A conversational TUI ([[spec-tui]]) is both a normal chat
-harness and a live view of the circuit; as you describe work, the agent decides
-what is worth externalizing into the graph — a one-line tweak it just does; long,
-parallel, or looping work it reifies ([[principle-gate-before-reifying]]) — and you
-watch the nodes appear and execute. Orca runs as a daemon, not a script: the TUI
-attaches and detaches, and the build keeps running.
+**Model-agnostic.** Orca drives different models from different providers and picks
+the right one per task — a cheap model for a quick edit, a frontier model for hard
+reasoning — with cost tracked precisely across all of them (see [[vision-features]]).
+It ships as a single self-contained binary ([[principle-no-runtime-deps]]).
 
-It works as a control hierarchy ([[vision-control-hierarchy]]), cheap reflexes
-first:
+**A conversational TUI over a live circuit.** You drive Orca by talking. The
+interface is a chat and a live view of the circuit side by side. The conversation is
+a **non-blocking braid** ([[spec-tui]]): you keep typing while work proceeds, and
+messages stream in from every agent at once — the one you're talking to, the
+supervisors recovering from failures, and the individual task agents reporting
+progress. Each task decides how loud to be: narrate every step, or run silently and
+just update the graph. Nothing blocks your input.
 
-- **L0 — Actions execute.** A model-driven agent or a command does the work at a node.
-- **L1 — Edges route deterministically.** `pass` / `fail` / `stuck` / `timeout` →
-  instant, free, no model call. Common cases never cost a token.
-- **L2 — A supervisor re-plans on unhandled failure**, mutating the graph to recover.
-- **L3 — The primary agent + human.** Designs the circuit, fields new requests, and
-  is pulled in when L2 is stuck.
+**A daemon, not a script.** Orca runs detached — close the terminal and reattach
+later; the build keeps going. And because it's **cloud-native**
+([[vision-cloud-native-execution]]), *where* a task runs is itself a decision: a
+quick edit runs locally, a multi-hour build or a long-running scraper gets pushed to
+a cloud VPS. When the right place is obvious, Orca decides; when it isn't, it asks.
 
-The unification is that the primary agent and the supervisor are the *same kind of
-thing* — a model whose tools are the graph-mutation API
-([[principle-unify-primary-and-supervisor]]) — differing only in trigger and
-altitude. Conversation, supervision, and execution are all an agent editing the
-circuit from a position in it. Different tasks can run on different models (selected
-automatically — see [[vision-features]]); governance keeps autonomy safe (validate
-mutations, cap cost and graph size); and the whole thing ships as a single compiled
-binary with no runtime dependency on any external harness
-([[principle-no-runtime-deps]]). Throughout, the agent designs **circuits —
-legible, finite, checkable graphs a human can steer — not opaque programs**
+## Loopcraft
+
+A circuit is not a to-do list, and it is not a one-shot DAG of tasks. At its core it
+is a **set of loops** — edit→evaluate→analyze→edit until a benchmark is hit, retry
+until a test passes, generate→critique→refine until quality converges. The straight
+"do A then B" path is just a loop that runs once. The interesting work — the work a
+linear plan literally cannot express — lives in feedback cycles that converge on a
+goal and know when to stop.
+
+So the agent's central skill is **loopcraft**: given a goal, *construct the right
+loops* — what each cycle does, which condition closes it, and what escapes it when it
+stalls — then wire them into a circuit that reaches the goal. Designing those loops,
+and the deterministic edges that govern them, is what it means to build a machine
+rather than to follow a plan. The agent is judged not on a single answer but on the
+quality of the machine it assembles.
+
+## How the work flows
+
+Cheap reflexes first, expensive thinking last ([[vision-control-hierarchy]]):
+
+- **Actions** do the work — a model-driven agent or a command at each node.
+- **Edges** route the outcome deterministically — `pass` / `fail` / `stuck` /
+  `timeout` — instantly and for free, so common paths never burn a model call. These
+  edges are also what close and escape the loops.
+- **Supervisors** step in only when something fails in a way the edges can't handle,
+  rewriting the graph to recover on their own.
+- **You** sit at the top — describing goals, steering mid-flight, pulled in only when
+  a supervisor is genuinely stuck.
+
+The agent you talk to and the supervisors that recover from failure are the same kind
+of thing — an agent whose tools edit the circuit
+([[principle-unify-primary-and-supervisor]]) — working at different altitudes.
+Governance keeps the autonomy safe (every graph mutation validated; total cost and
+size capped), and the system stays **legible**: you are always looking at a circuit
+you can read and steer, never an opaque program
 ([[principle-legible-circuits-not-programs]]).
