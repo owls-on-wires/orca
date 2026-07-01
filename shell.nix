@@ -7,5 +7,6 @@ pkgs.mkShell {
     nodejs
     curl
     jq
+    doctl
   ];
 }
