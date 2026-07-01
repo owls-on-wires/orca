@@ -179,8 +179,10 @@ export class Executor {
       const logDir = projectDir + "/.orca/logs";
       const logPath = logDir + "/" + runningAction.id + ".jsonl";
 
-      // Wall-clock timeout: configurable per action, default 10 minutes
-      const wallTimeout = (runningAction.params.wall_timeout as number | undefined) ?? 600;
+      // Wall-clock timeout: configurable per action, default 30 minutes. Large
+      // build stages on a small model legitimately run past 10 minutes; the
+      // planner should still size wall_timeout per stage, but the floor is 30m.
+      const wallTimeout = (runningAction.params.wall_timeout as number | undefined) ?? 1800;
       const abortController = new AbortController();
 
       const runOptions: RunOptions = {
@@ -206,33 +208,48 @@ export class Executor {
         }, wallTimeout * 1000);
       });
 
+      // A wall-timeout aborts the run (which also rejects the run promise). Any
+      // OTHER rejection is a REAL agent error — capture it so it is surfaced in
+      // the action output instead of being silently masked as a timeout.
+      let agentError: unknown = null;
       const raceResult = await Promise.race([
         this.runActionFn(runningAction, predecessorOutputs, runOptions)
-          .catch(() => WALL_TIMEOUT_SENTINEL), // if abort causes rejection, treat as timeout
+          .catch((err) => {
+            if (!abortController.signal.aborted) agentError = err;
+            return WALL_TIMEOUT_SENTINEL;
+          }),
         timeoutPromise,
       ]);
 
       if (raceResult === WALL_TIMEOUT_SENTINEL) {
-        // Wall-clock timeout — classify as timeout condition
+        // Either a wall-clock timeout or a real agent error (never a normal result).
         const now = new Date().toISOString();
+        const isError = agentError !== null;
+        const summary = isError
+          ? `Agent error: ${agentError instanceof Error ? agentError.message : String(agentError)}`.slice(0, 500)
+          : `Exceeded wall timeout (${wallTimeout}s)`;
+        // Real errors route as a normal failure (recoverable by a test/retry
+        // loop); a genuine timeout keeps its distinct condition.
+        const failCondition = isError ? "fail" : "timeout";
+        const failOutput = { status: isError ? "error" : "timeout", summary };
         this.db.updateAction(action.id, {
           status: "failed",
-          output: { status: "timeout", summary: `Exceeded wall timeout (${wallTimeout}s)` },
+          output: failOutput,
           completed_at: now,
         });
         this.db.appendHistory(action.id, "completed", {
-          condition: "timeout",
-          output_hash: hashOutput({ status: "timeout" }),
+          condition: failCondition,
+          output_hash: hashOutput(failOutput),
         });
         this.options.onActionEnd?.(this.db.getAction(action.id)!, {
-          condition: "timeout",
-          output: { status: "timeout", summary: `Exceeded wall timeout (${wallTimeout}s)` },
+          condition: failCondition,
+          output: failOutput,
           cost_usd: 0,
           duration_ms: wallTimeout * 1000,
           num_turns: 0,
         });
         this.lastCompletedAction = action.id;
-        this.followEdges(action, "timeout");
+        this.followEdges(action, failCondition);
         continue;
       }
 
