@@ -10,6 +10,7 @@
 import type { ModelProvider, ModelCapabilities } from "./provider";
 import type { Usage } from "./types";
 import { AnthropicProvider } from "./anthropic";
+import { OpenAIProvider } from "./openai";
 
 // ---------------------------------------------------------------------------
 // Price table
@@ -62,6 +63,17 @@ export function computeCost(price: ModelPrice, usage: Usage): number {
 const SONNET_PRICE: ModelPrice = { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 };
 const OPUS_PRICE: ModelPrice = { input: 15.0, output: 75.0, cacheRead: 1.5, cacheWrite: 18.75 };
 const HAIKU_PRICE: ModelPrice = { input: 0.8, output: 4.0, cacheRead: 0.08, cacheWrite: 1.0 };
+
+// ---------------------------------------------------------------------------
+// OpenAI price presets (per million tokens). OpenAI has no cache-creation
+// class, so cacheWrite is always 0; cached prompt tokens are priced at
+// cacheRead.
+// ---------------------------------------------------------------------------
+
+const GPT5_PRICE: ModelPrice = { input: 1.25, output: 10.0, cacheRead: 0.125, cacheWrite: 0 };
+const GPT5_MINI_PRICE: ModelPrice = { input: 0.25, output: 2.0, cacheRead: 0.025, cacheWrite: 0 };
+const GPT4O_PRICE: ModelPrice = { input: 2.5, output: 10.0, cacheRead: 1.25, cacheWrite: 0 };
+const GPT4O_MINI_PRICE: ModelPrice = { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 };
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -171,8 +183,17 @@ export class ModelRegistry {
 
 function inferPrice(apiModel: string): ModelPrice {
   const m = apiModel.toLowerCase();
+  // Anthropic families.
   if (m.includes("opus")) return OPUS_PRICE;
   if (m.includes("haiku")) return HAIKU_PRICE;
+  if (m.includes("sonnet")) return SONNET_PRICE;
+  // OpenAI families.
+  if (m.includes("gpt-5-mini") || m.includes("gpt-4o-mini") || (m.includes("mini") && /gpt|o[134]/.test(m))) {
+    return m.includes("gpt-5") ? GPT5_MINI_PRICE : GPT4O_MINI_PRICE;
+  }
+  if (m.includes("gpt-5")) return GPT5_PRICE;
+  if (m.includes("gpt-4o")) return GPT4O_PRICE;
+  if (/^(gpt|o1|o3|o4|chatgpt)/.test(m)) return GPT4O_PRICE;
   return SONNET_PRICE;
 }
 
@@ -208,6 +229,33 @@ export function buildDefaultRegistry(): ModelRegistry {
   registry.registerAlias("opus", "anthropic/claude-opus-4-6");
   registry.registerAlias("sonnet", "anthropic/claude-sonnet-4-6");
   registry.registerAlias("haiku", "anthropic/claude-haiku-4-5-20251001");
+
+  // OpenAI (and OpenAI-compatible) provider.
+  const openai = new OpenAIProvider();
+  registry.registerProvider(openai);
+
+  const openaiModels: Array<{ apiModel: string; price: ModelPrice }> = [
+    { apiModel: "gpt-5", price: GPT5_PRICE },
+    { apiModel: "gpt-5-mini", price: GPT5_MINI_PRICE },
+    { apiModel: "gpt-4o", price: GPT4O_PRICE },
+    { apiModel: "gpt-4o-mini", price: GPT4O_MINI_PRICE },
+  ];
+
+  for (const { apiModel, price } of openaiModels) {
+    registry.registerModel({
+      id: `openai/${apiModel}`,
+      provider: openai,
+      apiModel,
+      price,
+      capabilities: openai.capabilities,
+    });
+  }
+
+  registry.registerAlias("gpt5", "openai/gpt-5");
+  registry.registerAlias("gpt-5", "openai/gpt-5");
+  registry.registerAlias("gpt4o", "openai/gpt-4o");
+  registry.registerAlias("gpt-4o", "openai/gpt-4o");
+  registry.registerAlias("gpt-4o-mini", "openai/gpt-4o-mini");
 
   return registry;
 }

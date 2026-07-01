@@ -39,6 +39,27 @@ describe("model registry — resolution", () => {
     expect(r.price.input).toBe(15.0); // opus family
   });
 
+  test("resolves an openai prefixed id to the openai provider", () => {
+    const r = registry.resolveModel("openai/gpt-4o-mini");
+    expect(r.id).toBe("openai/gpt-4o-mini");
+    expect(r.apiModel).toBe("gpt-4o-mini");
+    expect(r.provider.id).toBe("openai");
+    expect(r.price.input).toBe(0.15);
+    expect(r.price.cacheWrite).toBe(0); // OpenAI has no cache-creation class
+  });
+
+  test("resolves a bare gpt id and openai aliases", () => {
+    expect(registry.resolveModel("gpt-4o").id).toBe("openai/gpt-4o");
+    expect(registry.resolveModel("gpt5").id).toBe("openai/gpt-5");
+    expect(registry.resolveModel("gpt-4o-mini").provider.id).toBe("openai");
+  });
+
+  test("unknown-but-serviceable openai id gets a best-effort family price", () => {
+    const r = registry.resolveModel("openai/gpt-4o-2099");
+    expect(r.provider.id).toBe("openai");
+    expect(r.price.input).toBe(2.5); // gpt-4o family
+  });
+
   test("throws for a model no provider serves", () => {
     expect(() => registry.resolveModel("mistral/large")).toThrow(/No provider registered/);
   });

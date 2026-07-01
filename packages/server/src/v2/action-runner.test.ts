@@ -9,7 +9,7 @@ import {
 import { createAction, type ActionConfig } from "./schema";
 
 // ---------------------------------------------------------------------------
-// Mock invokeSimple
+// Mock the invoke seam — agent actions drive the Orca loop through invokeSimple.
 // ---------------------------------------------------------------------------
 
 const mockInvokeSimple = mock(() =>
@@ -119,14 +119,10 @@ describe("command action", () => {
 // ---------------------------------------------------------------------------
 
 describe("agent action", () => {
-  // These tests mock the legacy Claude Code SDK path (invokeSimple), which is
-  // opt-in in P2 (Orca's own loop is the default). Enable the SDK path here.
+  // Agent actions run through Orca's own Layer B loop (`runAgentLoop`), which is
+  // mocked here to classify results without a live model call.
   beforeEach(() => {
-    process.env.ORCA_USE_CLAUDE_SDK = "1";
     mockInvokeSimple.mockClear();
-  });
-  afterEach(() => {
-    delete process.env.ORCA_USE_CLAUDE_SDK;
   });
 
   test("success with passed status → pass condition", async () => {
@@ -245,11 +241,7 @@ describe("agent action", () => {
 
 describe("predecessor output injection", () => {
   beforeEach(() => {
-    process.env.ORCA_USE_CLAUDE_SDK = "1";
     mockInvokeSimple.mockClear();
-  });
-  afterEach(() => {
-    delete process.env.ORCA_USE_CLAUDE_SDK;
   });
 
   test("formats predecessor outputs into prompt", () => {
@@ -362,10 +354,8 @@ describe("resolveNixEnv", () => {
     }
   });
 
-  test("passes env to invokeSimple for agent actions", async () => {
-    // The SDK path is opt-in (P2 fallback); enable it for this assertion.
-    process.env.ORCA_USE_CLAUDE_SDK = "1";
-    // Verify the env field is passed through to invokeSimple
+  test("passes env to the agent loop for agent actions", async () => {
+    // Verify the env field is passed through to the agent loop.
     const action = agentAction();
     mockInvokeSimple.mockClear();
     mockInvokeSimple.mockResolvedValueOnce({
@@ -381,10 +371,9 @@ describe("resolveNixEnv", () => {
     const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nonix-"));
     await runAction(action, [], { projectDir: tmpDir });
 
-    // invokeSimple was called — check the options
+    // runAgentLoop was called — check the options
     expect(mockInvokeSimple).toHaveBeenCalledTimes(1);
     const opts = mockInvokeSimple.mock.calls[0][0] as { env?: Record<string, string> };
     expect(opts.env).toBeUndefined();
-    delete process.env.ORCA_USE_CLAUDE_SDK;
   });
 });

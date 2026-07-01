@@ -2,7 +2,7 @@
  * Production BuildContext factory.
  *
  * Constructs a real BuildContext that wires together all orca modules:
- * - invoke.ts for Claude Agent SDK calls
+ * - invoke.ts — the provider-neutral agent seam (Orca's own Layer B loop)
  * - eval.ts for subprocess evaluation
  * - git/index.ts for snapshots/reverts
  * - config/prompts.ts for prompt/schema resolution

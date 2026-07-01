@@ -3,13 +3,10 @@
  */
 
 import { resolve, dirname } from "path";
-import { readFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
-import { invokeSimple } from "../engine/invoke";
-import type { InvokeResult, InvokeOptions } from "../engine/invoke";
+import { existsSync, mkdirSync, appendFileSync } from "fs";
 import { applyVars } from "../templates";
 import { buildNixCommand, buildNixScriptCommand } from "../nix";
-import { runAgentLoop } from "../engine/agent-loop";
-import { resolveModel } from "../models/registry";
+import { invokeSimple } from "../engine/invoke";
 import type { ScopeConfig, Toolset } from "../config/schema";
 import type { ActionConfig, ActionOutput, EdgeCondition, NixConfig } from "./schema";
 
@@ -207,179 +204,7 @@ export function resolveNixEnv(projectDir: string, nixConfig?: NixConfig): Record
 }
 
 // ---------------------------------------------------------------------------
-// Watchdog: recovers from SDK generator hangs by reading JSONL log
-// ---------------------------------------------------------------------------
-
-const WATCHDOG_POLL_INTERVAL = 5000;  // check log every 5 seconds
-const WATCHDOG_GRACE_PERIOD = 15000;  // wait 15s after invoke_end before force-resolving
-
-async function invokeWithWatchdog(
-  options: InvokeOptions,
-  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void,
-): Promise<InvokeResult> {
-  const logPath = options.logPath;
-
-  // If no log path, can't watchdog — fall back to direct call
-  if (!logPath) {
-    return invokeSimple(options, onToolUse);
-  }
-
-  // Count existing invoke_end entries so we only detect NEW ones
-  let existingEnds = 0;
-  if (existsSync(logPath)) {
-    const content = readFileSync(logPath, "utf8");
-    existingEnds = content.split("\n").filter(l => l.includes('"invoke_end"')).length;
-  }
-
-  return new Promise<InvokeResult>((resolveOuter) => {
-    let resolved = false;
-    let watchdogInterval: ReturnType<typeof setInterval> | null = null;
-    let graceTimeout: ReturnType<typeof setTimeout> | null = null;
-
-    function cleanup() {
-      if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
-      if (graceTimeout) { clearTimeout(graceTimeout); graceTimeout = null; }
-    }
-
-    function finish(result: InvokeResult) {
-      if (resolved) return;
-      resolved = true;
-      cleanup();
-      resolveOuter(result);
-    }
-
-    // Start the real invoke
-    invokeSimple(options, onToolUse).then(
-      (result) => finish(result),
-      (err) => {
-        // On error, resolve with error result rather than rejecting
-        finish({
-          output: null,
-          costUsd: 0,
-          sessionId: null,
-          numTurns: 0,
-          durationMs: 0,
-          isError: true,
-        });
-      },
-    );
-
-    // Watchdog: poll the JSONL log for a new invoke_end
-    watchdogInterval = setInterval(() => {
-      if (resolved) { cleanup(); return; }
-      if (!existsSync(logPath)) return;
-
-      try {
-        const content = readFileSync(logPath, "utf8");
-        const lines = content.trim().split("\n").filter(Boolean);
-        const endLines = lines.filter(l => l.includes('"invoke_end"'));
-
-        // Only trigger on NEW invoke_end entries
-        if (endLines.length <= existingEnds) return;
-
-        // Found a new invoke_end — start grace period
-        const lastEnd = JSON.parse(endLines[endLines.length - 1]);
-
-        if (!graceTimeout) {
-          graceTimeout = setTimeout(() => {
-            if (resolved) return;
-            // Grace period expired — invokeSimple didn't resolve. Force-resolve from log.
-            const result: InvokeResult = {
-              output: lastEnd.structured_output ?? null,
-              costUsd: lastEnd.cost_usd ?? 0,
-              sessionId: lastEnd.session_id ?? null,
-              numTurns: lastEnd.num_turns ?? 0,
-              durationMs: lastEnd.duration_ms ?? 0,
-              isError: lastEnd.is_error ?? false,
-            };
-            console.log(`[watchdog] Force-resolving ${options.label} from JSONL (SDK generator hung)`);
-            finish(result);
-          }, WATCHDOG_GRACE_PERIOD);
-        }
-      } catch {
-        // Ignore read errors — file might be mid-write
-      }
-    }, WATCHDOG_POLL_INTERVAL);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Agent action
-// ---------------------------------------------------------------------------
-
-/**
- * Whether to use the legacy Claude Code SDK path instead of Orca's own agent
- * loop. Opt-in fallback for one phase (P2); removed in P3. By default every
- * agent action runs through Orca's Layer B loop — no `claude` binary.
- */
-function useClaudeSdk(): boolean {
-  return process.env.ORCA_USE_CLAUDE_SDK === "1";
-}
-
-async function runAgentAction(
-  action: ActionConfig,
-  predecessorOutputs: PredecessorOutput[],
-  options: RunOptions,
-): Promise<ActionResult> {
-  // Default: Orca-owned agent loop (Layer B). The SDK path is opt-in only.
-  if (!useClaudeSdk()) {
-    return runAgentApiAction(action, predecessorOutputs, options);
-  }
-
-  const params = action.params;
-  const prompt = params.prompt as string;
-  const systemPrompt = params.system_prompt as string | undefined;
-  const maxTurns = params.max_turns as number | undefined;
-  const toolset = params.toolset as Toolset | undefined;
-  const outputSchema = (params.output_schema as object | undefined) ?? DEFAULT_OUTPUT_SCHEMA;
-
-  // Build full prompt with predecessor injection
-  const parts: string[] = [];
-  const predecessorPrompt = buildPredecessorPrompt(predecessorOutputs);
-  if (predecessorPrompt) {
-    parts.push(predecessorPrompt);
-  }
-  parts.push(prompt);
-
-  const fullPrompt = parts.join("\n\n");
-
-  // Resolve the model to a provider via the registry (Layer A seam).
-  const resolved = resolveModel(options.model);
-
-  // Open nix env session — keeps TMPDIR alive for the duration of the agent
-  const nixSession = openNixEnvSession(options.projectDir, options.nix);
-
-  try {
-  const result = await invokeWithWatchdog({
-    prompt: fullPrompt,
-    projectDir: resolve(options.projectDir),
-    model: resolved.apiModel,
-    toolset,
-    maxTurns,
-    outputSchema,
-    scope: options.scope,
-    logPath: options.logPath,
-    systemPrompt,
-    label: action.id,
-    abortController: options.abortController,
-    env: nixSession?.env,
-  }, options.onToolUse);
-
-  const { condition, output } = classifyResult(
-    result.output as Record<string, unknown> | null,
-    result.isError,
-    result.numTurns,
-    maxTurns,
-  );
-
-  return { condition, output, cost_usd: result.costUsd, duration_ms: result.durationMs, num_turns: result.numTurns };
-  } finally {
-    nixSession?.close();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Agent-API action (direct Anthropic API, no SDK subprocess)
+// Agent action (Orca-owned Layer B loop — no claude binary, model-agnostic)
 // ---------------------------------------------------------------------------
 
 async function runAgentApiAction(
@@ -407,21 +232,22 @@ async function runAgentApiAction(
   const nixSession = openNixEnvSession(options.projectDir, options.nix);
 
   try {
-    const result = await runAgentLoop({
+    // Drive the Orca-owned Layer B loop through the stable invoke seam. The
+    // model id selects the provider (Anthropic, OpenAI, …) — no claude binary.
+    const result = await invokeSimple({
       prompt: fullPrompt,
-      systemPrompt,
+      projectDir: resolve(options.projectDir),
       model: options.model,
-      maxTurns,
       toolset,
+      maxTurns,
       outputSchema,
-      cwd: resolve(options.projectDir),
-      env: nixSession?.env as Record<string, string> | undefined,
-      logPath: options.logPath,
-      label: action.id,
-      abortController: options.abortController,
-      onToolUse: options.onToolUse,
       scope: options.scope,
-    });
+      systemPrompt,
+      label: action.id,
+      logPath: options.logPath,
+      abortController: options.abortController,
+      env: nixSession?.env,
+    }, options.onToolUse);
 
     const { condition, output } = classifyResult(
       result.output,
@@ -602,9 +428,7 @@ export async function runAction(
   predecessorOutputs: PredecessorOutput[],
   options: RunOptions,
 ): Promise<ActionResult | WaitingResult> {
-  if (action.type === "agent") {
-    return runAgentAction(action, predecessorOutputs, options);
-  } else if (action.type === "agent-api") {
+  if (action.type === "agent" || action.type === "agent-api") {
     return runAgentApiAction(action, predecessorOutputs, options);
   } else if (action.type === "command") {
     return runCommandAction(action, predecessorOutputs, options);

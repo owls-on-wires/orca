@@ -1,34 +1,19 @@
 /**
- * Invoke module tests.
+ * Invoke-seam tests.
  *
- * These test the wrapper around the Claude Agent SDK. Since the SDK
- * requires a real claude binary and API key, these tests mock the
- * SDK layer and verify the wrapper logic:
- * - session propagation
- * - scope callback (can_use_tool)
- * - structured output extraction
- * - event streaming protocol
- * - timeout handling
+ * `invoke()`/`invokeSimple()` are the stable, provider-neutral boundary; their
+ * guts are Orca's own Layer B loop driving a ModelProvider (no claude binary, no
+ * SDK). These verify the seam's public surface: the option/result/event shapes
+ * and that `invoke()` is an async generator that terminates cleanly even with no
+ * API key (the loop captures the error and yields an error result).
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
 import type { InvokeOptions, InvokeResult, InvokeEvent } from "./invoke";
 import { invoke } from "./invoke";
 
-// ---------------------------------------------------------------------------
-// Since the real SDK isn't available in tests, we test the parts
-// of invoke that DON'T require the SDK: wrapper script generation,
-// scope callback logic, option assembly.
-//
-// Full integration tests with the SDK would run separately with:
-//   ORCA_TEST_INTEGRATION=1 bun test invoke.integration.test.ts
-// ---------------------------------------------------------------------------
-
 describe("invoke", () => {
-  describe("sdk invocation", () => {
+  describe("seam", () => {
     test("invoke function exists and is async generator", async () => {
       const options: InvokeOptions = {
         prompt: "test",
@@ -38,7 +23,8 @@ describe("invoke", () => {
       try {
         for await (const event of invoke(options)) { /* consume */ }
       } catch {
-        // Expected — SDK spawns claude which may not be available
+        // Tolerated — with no API key the loop yields an error result rather
+        // than throwing, but a throw here is acceptable too.
       }
     });
   });
