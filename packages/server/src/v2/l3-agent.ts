@@ -28,6 +28,7 @@ import type {
 import { applyValidatedDelta, type ApplyValidatedOptions } from "./graph-ops";
 import type { CustomTool } from "../engine/agent-loop";
 import { runAgentLoop, type AgentLoopOptions } from "../engine/agent-loop";
+import type { Toolset } from "../config/schema";
 import type { ToolSchema } from "../models/types";
 import type { ModelRegistry } from "../models/registry";
 import { readdirSync, readFileSync, existsSync, statSync } from "fs";
@@ -242,9 +243,20 @@ export function createGraphEditTool(
 
 export function loopcraftSystemPrompt(): string {
   return [
-    "You are Orca's L3 primary agent. You do not edit files directly — your only",
-    "tool is `apply_graph_edits`, which reifies work into a DURABLE action/edge",
-    "circuit that a separate executor runs. Talking to you builds the circuit.",
+    "You are Orca's L3 primary agent. You do not edit files directly — you reify",
+    "work into a DURABLE action/edge circuit that a separate executor runs. Talking",
+    "to you builds the circuit.",
+    "",
+    "# Observe read-only, then act by mutation",
+    "Your tools split cleanly and do NOT overlap:",
+    "- OBSERVE (recon): `Read`, `Grep`, `Glob` are READ-ONLY. Use them to GROUND",
+    "  your plan in the ACTUAL workspace — read a config, grep for an entry point,",
+    "  glob a directory — BEFORE you author prompts. You have NO Write/Edit/Bash:",
+    "  you never touch files yourself; the actions you reify do the building.",
+    "- ACT: `apply_graph_edits` is your ONLY way to change anything. Authoring an",
+    "  action's `prompt`, wiring edges, updating another task's context — all of it",
+    "  is a graph mutation. Recon is seeing; mutation is doing.",
+    "Recon first when a goal is non-trivial; don't recon a one-line change.",
     "",
     "# The circuit model",
     "- An ACTION is a node: type `agent` (an LLM sub-agent given a `prompt`) or",
@@ -268,6 +280,15 @@ export function loopcraftSystemPrompt(): string {
     "back-edge but NO escape is an unbounded cycle and WILL be rejected. Always",
     "cap the loop: set `max_iterations` on the build action (e.g. 5).",
     "",
+    "# Decompose a large goal into grounded build→test stages",
+    "Do NOT collapse a big goal into one giant build action. Recon the workspace,",
+    "then break the work into SEVERAL sequential build→test stages, each a small",
+    "loop that must go green before the next begins:",
+    "  stage1.build ⇄ stage1.test  --pass-->  stage2.build ⇄ stage2.test  --pass--> …",
+    "Wire each stage's test --pass--> the next stage's build (the escape from one",
+    "loop is the entry to the next), and give each build a prompt grounded in what",
+    "recon actually found. Small verified stages beat one unverifiable megastep.",
+    "",
     "# Applying edits",
     "Add the nodes AND their edges in a SINGLE `apply_graph_edits` call — the batch",
     "is validated and committed atomically, so intermediate half-built states never",
@@ -279,8 +300,8 @@ export function loopcraftSystemPrompt(): string {
     "from the tree (do not invent `src/index.ts` if the entry is `src/server.ts`),",
     "wire command actions to the project's real test/build commands, and remember",
     "command actions run IN the working directory — never `cd` elsewhere or invent",
-    "a path. If a detail you need is not shown, have a build agent discover it at",
-    "run time rather than guessing it.",
+    "a path. If a detail you need is not shown, use recon (`Read`/`Grep`/`Glob`) to",
+    "discover it now, or have a build agent discover it at run time.",
     "",
     "When the circuit is built, call StructuredOutput with status 'passed' and a",
     "one-line summary of the loop you reified.",
@@ -375,6 +396,12 @@ export interface L3TurnOptions {
   maxTurns?: number;
   maxActions?: number;
   maxEdges?: number;
+  /**
+   * Read-only recon toolset the planner may use ALONGSIDE `apply_graph_edits`
+   * to observe the workspace before/while planning. Defaults to `read_only`
+   * (Read/Grep/Glob) — no Write/Edit/Bash, so acting stays mutation-only.
+   */
+  reconToolset?: Toolset;
   apiKey?: string;
   apiUrl?: string;
   registry?: ModelRegistry;
@@ -427,7 +454,10 @@ export async function runL3Turn(options: L3TurnOptions): Promise<L3TurnResult> {
     model: options.model,
     cwd: options.cwd,
     maxTurns: options.maxTurns ?? 12,
-    includeBuiltinTools: false,
+    // Give the planner READ-ONLY recon (Read/Grep/Glob) alongside the graph
+    // mutation tool: it can OBSERVE the workspace to ground its plan, but it
+    // still ACTS only by mutation — no Write/Edit/Bash in this toolset.
+    toolset: options.reconToolset ?? "read_only",
     customTools: [tool],
     registry: options.registry,
     apiKey: options.apiKey,

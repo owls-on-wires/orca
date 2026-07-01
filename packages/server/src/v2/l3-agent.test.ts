@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync } from "fs";
+import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { OrcaDatabase } from "./db";
@@ -71,6 +71,66 @@ function scriptedProvider(edits: GraphEdit[]): ModelProvider {
       }
 
       yield { type: "tool_call", toolCall: { id: "out", name: "StructuredOutput", input: { status: "passed", summary: "circuit built" } } };
+      yield { type: "stop", reason: "tool_use" };
+    },
+  };
+}
+
+/** Did the transcript already contain a tool_call with this name? */
+function toolCalled(messages: ModelMessage[], name: string): boolean {
+  for (const m of messages) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type === "tool_call" && b.name === name) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A provider that RECONS first (reads a file) then ACTS (apply_graph_edits) then
+ * finalizes. Records the tool schemas it was offered into `seenTools` so a test
+ * can assert the recon toolset is present and no write tools leaked in.
+ */
+function reconThenBuildProvider(
+  filePath: string,
+  edits: GraphEdit[],
+  seenTools: string[],
+): ModelProvider {
+  return {
+    id: "fake",
+    capabilities: CAPS,
+    supports: () => true,
+    async *stream(
+      messages: ModelMessage[],
+      tools: ToolSchema[],
+      opts: StreamOptions,
+    ): AsyncIterable<ModelDelta> {
+      seenTools.push(...tools.map((t) => t.name));
+      yield { type: "usage", usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+
+      const forced = typeof opts.toolChoice === "object" ? opts.toolChoice.name : undefined;
+      if (forced) {
+        yield { type: "tool_call", toolCall: { id: "out", name: forced, input: { status: "passed", summary: "built" } } };
+        yield { type: "stop", reason: "tool_use" };
+        return;
+      }
+
+      if (!toolCalled(messages, "Read")) {
+        yield { type: "text", text: "Reconning the workspace first." };
+        yield { type: "tool_call", toolCall: { id: "r1", name: "Read", input: { file_path: filePath } } };
+        yield { type: "stop", reason: "tool_use" };
+        return;
+      }
+
+      if (!toolCalled(messages, "apply_graph_edits")) {
+        yield { type: "text", text: "Grounded — reifying the loop." };
+        yield { type: "tool_call", toolCall: { id: "e1", name: "apply_graph_edits", input: { edits } } };
+        yield { type: "stop", reason: "tool_use" };
+        return;
+      }
+
+      yield { type: "tool_call", toolCall: { id: "out", name: "StructuredOutput", input: { status: "passed", summary: "built" } } };
       yield { type: "stop", reason: "tool_use" };
     },
   };
@@ -181,5 +241,58 @@ describe("L3 agent: converse → reify a looping circuit", () => {
     expect(db.getAction("bad.test")).toBeNull();
     // The turn itself still completes (the agent got the rejection as a result).
     expect(result.isError).toBe(false);
+  });
+});
+
+describe("CG1: read-only recon tools alongside apply_graph_edits", () => {
+  test("the planner is offered Read/Grep/Glob + apply_graph_edits, but no Write/Edit/Bash", async () => {
+    const seenTools: string[] = [];
+    const provider = reconThenBuildProvider(join(tmpDir, "spec.txt"), LOOP_EDITS, seenTools);
+
+    await runL3Turn({
+      db,
+      message: "Recon then build.",
+      cwd: tmpDir,
+      model: "fake/model",
+      registry: registryFor(provider),
+      taskTag: "task:demo",
+    });
+
+    // Recon toolset present alongside the mutation tool...
+    expect(seenTools).toContain("Read");
+    expect(seenTools).toContain("Grep");
+    expect(seenTools).toContain("Glob");
+    expect(seenTools).toContain("apply_graph_edits");
+    // ...and NO write/edit/bash tools (acting stays mutation-only).
+    expect(seenTools).not.toContain("Write");
+    expect(seenTools).not.toContain("Edit");
+    expect(seenTools).not.toContain("Bash");
+  });
+
+  test("an L3 turn can actually Read a file, then reify a valid circuit", async () => {
+    const specPath = join(tmpDir, "spec.txt");
+    writeFileSync(specPath, "ENTRY POINT: src/server.ts\n");
+    const seenTools: string[] = [];
+    const provider = reconThenBuildProvider(specPath, LOOP_EDITS, seenTools);
+
+    const result = await runL3Turn({
+      db,
+      message: "Recon then build.",
+      cwd: tmpDir,
+      model: "fake/model",
+      registry: registryFor(provider),
+      taskTag: "task:demo",
+    });
+
+    // The recon call executed (a real Read tool ran) AND the mutation landed.
+    expect(result.isError).toBe(false);
+    expect(result.output?.status).toBe("passed");
+    expect(result.edits.length).toBe(1);
+    expect(result.edits[0].ok).toBe(true);
+
+    // The circuit is valid and both actions exist.
+    expect(validateGraph(db.rawDb)).toEqual([]);
+    expect(db.getAction("demo.build")!.status).toBe("pending");
+    expect(db.getAction("demo.test")!.status).toBe("inactive");
   });
 });
