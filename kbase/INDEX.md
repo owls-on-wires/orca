@@ -27,6 +27,7 @@ for conventions.
 - `vision/thesis.md` — build the machine, don't just plan (authoritative).
 - `vision/control-hierarchy.md` — the L0–L3 escalation ladder (authoritative).
 - `vision/cloud-native-execution.md` — local-vs-cloud placement as a decision (proposed).
+- `vision/context-as-graph.md` — memory dissolves: context is graph state, authored by planners (proposed).
 - `vision/features.md` — target feature set (proposed).
 
 ## Decisions — ADRs (settled; don't re-litigate)

@@ -82,7 +82,9 @@ must not grade its own work), it is simple, and Claude Code already has the tool
 (bash/read/curl) to boot the software and probe it. Orca-as-judge (dogfooding) is a
 possible future, tracked as an open option, not the current path.
 
-**Invocation** (run with `cwd` = the built workspace so it can boot + probe):
+**Invocation** (run with `cwd` = the built workspace so it can boot + probe). Use
+**`--json-schema`** to *guarantee* schema-conforming output — do not rely on prompt
+discipline (an early run without it prepended a sentence of prose and broke `jq`):
 
 ```bash
 cd "$WORKSPACE"
@@ -90,24 +92,33 @@ claude -p "$(cat judge-prompt.md)" \
   --model "$JUDGE_MODEL" \
   --dangerously-skip-permissions \
   --output-format json \
+  --json-schema "$(cat scored-rubric.schema.json)" \
   > judge-raw.json
-# .result holds the final message; we instruct it to be pure JSON:
-jq -r '.result' judge-raw.json > scored-rubric.json
+# schema-conforming object lands in .structured_output (NOT .result):
+jq '.structured_output' judge-raw.json > scored-rubric.json
 ```
 
 **Model decoupling:** build cheap (**haiku**), **judge with a stronger model** —
 grading reliability matters more than build cost. Separate `model` fields.
 
 **The judge prompt** (`judge-prompt.md`, assembled per run) instructs Claude to:
-1. Read `RUBRIC.md` (pasted in) and the boot instructions (start cmd + port + health).
-2. **Discover** the API the builder actually chose (route list / `/llms.txt` / probe
-   common paths) — the contract is unknown by design.
+1. Read `RUBRIC.md` and the boot info; **discover the entry** — the builder chose the
+   layout, so find it from `package.json`/`src/` rather than assuming `src/server.ts`.
+2. **Discover** the API the builder actually chose (route list / `/llms.txt` / probe) —
+   the contract is unknown by design.
 3. Grade each capability at **PRESENT / FUNCTIONAL / ROBUST**, where
    **FUNCTIONAL/ROBUST verdicts MUST come from executed requests, never from reading
    source.** Every "works" cites the request/response.
-4. Adversarially **hunt bugs** (bad input, edge cases, data round-trips).
-5. Emit **ONLY** a single JSON object (its final message) in the exact schema below —
-   no prose, no markdown fence.
+4. Adversarially **hunt bugs** (bad input, edge cases, data round-trips, and **a
+   concurrency burst** when the rubric requires it — this is how the todo-api
+   data-loss bug was caught).
+5. **Calibration rule** — grade against the rubric's *stated* requirements. Issues
+   *beyond* the rubric go in `bugs`/notes but do **not** lower a capability's verdict.
+   (This tamed a 0.95↔0.62 verdict swing on identical builds.)
+6. Report `quality.score` **out of 10**.
+
+Output structure is enforced by `--json-schema`, so the prompt no longer needs to beg
+for "JSON only".
 
 **Expected output — `scored-rubric.json`:**
 
@@ -127,17 +138,38 @@ grading reliability matters more than build cost. Separate `model` fields.
   ],
   "coverage_pct": 100,
   "functional_pct": 90,
-  "quality": { "score": 0.85, "notes": "sane status codes; consistent shapes; errors are clear" },
+  "quality": { "score": 8, "notes": "sane status codes; consistent shapes; errors are clear" },
   "bugs": ["PUT with an unknown field is silently ignored"],
   "overall_verdict": "pass",
   "summary": "..."
 }
 ```
 
-Reliability note: `--output-format json` returns an envelope; `.result` is the final
-assistant text, which the prompt forces to be a bare JSON object. Parse `.result`;
-if a run wraps it in prose/a fence, extract the first `{...}` block. Validate against
-the schema; a malformed judge output is a judge failure, not a build failure.
+Notes: with `--json-schema` the conforming object is in `.structured_output` and is
+guaranteed valid — no prose-extraction needed. **`quality.score` is an integer 0–10**;
+bound it in the schema (`minimum:0, maximum:10`) *and* say "out of 10" in the prompt —
+an unbounded run once returned `4.7` on an implied 0–1 scale. A malformed/absent
+`.structured_output` is a judge failure, not a build failure.
+
+## Validated end-to-end (todo-api, ~$1: haiku build + sonnet judge)
+
+The full loop runs and is trustworthy. What the first real runs taught us:
+
+- **The planner needs grounding as much as the builder.** L3 got *no* workspace
+  context (generic prompt, no file tools) and hallucinated file/test paths
+  (`src/index.ts`, `/tmp/test-…`). Injecting a WORKSPACE CONTEXT block (file tree,
+  `package.json`, cwd convention, current circuit) into the planning turn fixed it —
+  see [[architecture-current-state]].
+- **The rubric must state what it grades.** A build lost data under concurrency; the
+  judge flagged it, but the rubric only required single-process persistence. Making
+  concurrency explicit (in PROMPT *and* RUBRIC) both *changed the build* (it became
+  concurrency-safe) and *aligned the verdict*.
+- **Objective vs. subjective.** Per-capability present/functional/robust is **stable**
+  across judge runs; `quality`/`overall_verdict` are **noisy** (they track how hard the
+  judge probed). Grade on the stable axes; **run a panel** for the fuzzy ones.
+- **Daemon robustness.** On a 4 GB host the orca server OOM-died mid-build (server +
+  build agent + bun processes at once). The build artifact survived but the circuit
+  state was lost — the daemon must survive/restart under its own build load.
 
 ## Cross-cutting
 
