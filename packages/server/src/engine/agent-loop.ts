@@ -122,7 +122,10 @@ export interface AgentLoopOptions {
 }
 
 const DEFAULT_MAX_TOKENS = 8192;
-const DEFAULT_MAX_TURNS = 30;
+// 80: a substantial build stage writes several files AND iterates a sanity
+// check; 30 cut agents off mid-build. The primary agent / supervisor pass their
+// own (smaller) caps, so this floor only affects build-style agent actions.
+const DEFAULT_MAX_TURNS = 80;
 const OUTPUT_TOOL_NAME = "StructuredOutput";
 
 // ---------------------------------------------------------------------------
