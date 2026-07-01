@@ -3,6 +3,13 @@
   "private": true,
   "scripts": {
     "test": "bun test",
-    "dev": "bun run src/server.ts"
+    "dev": "bun run src/server.ts",
+    "start:bg": "kill $(lsof -ti:37001 -sTCP:LISTEN) 2>/dev/null; nohup bun run src/server.ts > /tmp/todo-api.log 2>&1 & disown; sleep 1; echo started",
+    "stop": "kill $(lsof -ti:37001 -sTCP:LISTEN) 2>/dev/null; echo stopped",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/bun": "latest"
   }
 }

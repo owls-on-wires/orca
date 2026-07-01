@@ -1,5 +1,5 @@
 const server = Bun.serve({
-  port: 3458,
+  port: Number(process.env.PORT ?? 37003),
   fetch(req) {
     const url = new URL(req.url);
 
