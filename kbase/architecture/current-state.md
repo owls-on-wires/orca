@@ -57,7 +57,7 @@ narration arrives as SSE (`l3_message` / `graph_edit` / `l3_result`), reusing
 
 | # | Piece | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Conversational loop / TUI | partial | L3 agent + `POST /chat` non-blocking braid exist (`l3-agent.ts`, `server.ts`); TUI front-end is P6 (not yet built) |
+| 1 | Conversational loop / TUI | done | L3 agent + `POST /chat` non-blocking braid (`l3-agent.ts`, `server.ts`); Ink two-pane TUI (`packages/tui`) attaches over REST+SSE, detaches on quit while the build keeps running |
 | 2 | Scope-aware scheduler | partial | Serial: `executor.ts` picks one action, races one. Scope is project-wide, not per-action |
 | 3 | Gating (act vs. delegate) | partial | Everything routes through the graph; no act-directly decision point |
 | 4 | Governance (DRC + breaker) | done | `validateGraph` does cycle-legality (Tarjan SCC + escape), reachability, size caps; `applyValidatedDelta` validates-then-commits/rolls-back with an `invalid_mutation` event; global circuit-breaker in `executor.ts` caps cost + graph size and emits `unhandled_failure` |
@@ -76,17 +76,35 @@ narration arrives as SSE (`l3_message` / `graph_edit` / `l3_result`), reusing
   dangling-edge, and size-cap checks.
 - The executor's global **circuit-breaker** caps total cost and graph size.
 
+## Conversational TUI (P6, done)
+
+`packages/tui` is the default front-end — an Ink two-pane shell (conversation/braid
+left, live list-mode circuit + node detail right; top bar with counts/cost/burn/
+elapsed, bottom bar keybindings) that **compiles into a bun binary**. It is a thin
+client: it attaches to the daemon over REST + SSE and **detaches on quit while the
+build keeps running** (the daemon owns all build state; the TUI drops the SSE
+connection and exits). The store (`tui/src/store.ts`) is a pure reducer over SSE
+events — a `graph_edit` event renders a circuit-edit card in the braid AND updates
+the circuit pane in the same tick, so a chat request that reifies work is visible in
+both views at once. Redraws are coalesced (~15fps). `orca` auto-starts a daemon if
+none is reachable.
+
 ## Remaining hazards / gaps
 
 - **Scope is project-wide, not per-action.** Any plan to "parallelize disjoint
   write-scope" has nothing to compare until per-action scope exists. See
   [[open-question-per-action-scope-source]].
-- **No TUI yet** (P6): the conversational braid + live circuit view is the last mile.
 - **`add_action` deltas don't persist `project_id`** (the column is omitted from the
   `applyDelta` INSERT); L3/supervisor-created actions carry the `project:<id>` **tag**
   instead, which is what escalation scoping keys on.
+- **Inline-executor SSE wiring is caller-supplied.** The worker path broadcasts
+  action events automatically; an in-process `Executor` (test/embedded) must wire its
+  callbacks to `broadcast()` itself (see `tui-detach.test.ts`).
 
-## Next (roadmap)
+## Status: first working version reached (P1–P6)
 
-P6 — the conversational TUI (Ink two-pane braid + live list-mode circuit) attaching
-to `orca serve` over REST+SSE, detaching on quit while the build keeps running.
+Launch `orca` (TUI) → converse with the L3 agent in a non-blocking braid → it reifies
+a durable, governed **looping** circuit → the executor runs it on a model chosen per
+task, over Orca's own agent loop, with **no `claude` binary and no Claude Code SDK** →
+the build runs under `orca serve` and survives TUI detach. Post-1.0 (still out):
+concurrent scheduling, per-action scope, computed-goto routing, web multiplexer.

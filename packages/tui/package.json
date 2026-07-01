@@ -1,0 +1,22 @@
+{
+  "name": "@orca/tui",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Orca conversational TUI — non-blocking braid + live circuit view",
+  "type": "module",
+  "main": "src/index.tsx",
+  "scripts": {
+    "start": "bun run src/index.tsx",
+    "build": "bun build src/index.tsx --compile --external react-devtools-core --outfile ../../bin/orca-tui",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ink": "^7.1.0",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "ink-testing-library": "^4.0.0"
+  }
+}
