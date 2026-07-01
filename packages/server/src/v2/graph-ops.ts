@@ -63,10 +63,21 @@ export function applyDelta(db: Database, delta: GraphDelta): void {
 
     case "update_params": {
       const existing = db
-        .query("SELECT params FROM actions WHERE id = ?")
-        .get(delta.action_id) as { params: string } | null;
+        .query("SELECT params, status FROM actions WHERE id = ?")
+        .get(delta.action_id) as { params: string; status: string } | null;
       if (!existing) {
         throw new Error(`Action '${delta.action_id}' does not exist`);
+      }
+      // Late-binding freeze: a task's context can be rewritten until it RUNS.
+      // Once running, its prompt is frozen — reject the rewrite so the executor
+      // never has its input change out from under it mid-run.
+      if (
+        existing.status === "running" &&
+        Object.prototype.hasOwnProperty.call(delta.params, "prompt")
+      ) {
+        throw new Error(
+          `Cannot rewrite prompt of running action '${delta.action_id}' (context is frozen on run)`,
+        );
       }
       const currentParams = JSON.parse(existing.params || "{}");
       const merged = { ...currentParams, ...delta.params };
