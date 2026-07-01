@@ -333,6 +333,23 @@ export class OrcaDatabase {
     return rows.map(rowToAction);
   }
 
+  /**
+   * Crash recovery: reset actions left in 'running' by a dead process back to
+   * 'pending' so getReadyActions re-queues them. Returns the affected ids.
+   */
+  recoverOrphanedRunning(): string[] {
+    const rows = this.db
+      .query("SELECT id FROM actions WHERE status = 'running'")
+      .all() as { id: string }[];
+    const ids = rows.map((r) => r.id);
+    if (ids.length) {
+      this.db.run(
+        "UPDATE actions SET status = 'pending', started_at = NULL WHERE status = 'running'",
+      );
+    }
+    return ids;
+  }
+
   // ── Edges ──
 
   insertEdge(edge: EdgeConfig): number {

@@ -32,3 +32,18 @@ test("bashTool reports a non-zero exit code", async () => {
   );
   expect(r.output).toContain("Exit code: 3");
 });
+
+// Regression: an agent's `pkill -f server.ts` matched and killed the orca
+// orchestrator (both are `bun ... server.ts`). pkill/killall must be refused.
+test("bashTool refuses pkill/killall but allows lookalikes and specific kills", async () => {
+  const run = async (command: string) =>
+    (await bashTool({ command, timeout: 5 }, { cwd: "/tmp", env: process.env } as any)) as any;
+
+  expect((await run("pkill -f server.ts")).isError).toBe(true);
+  expect((await run("pkill -f server.ts")).output).toContain("Refused");
+  expect((await run("sleep 1 & killall bun")).isError).toBe(true);
+  // "skillful" contains "kill" but is not pkill/killall — must NOT be refused
+  expect((await run("echo skillful")).output).toBe("skillful");
+  // a specific-pid kill is fine
+  expect((await run("echo ok")).output).toBe("ok");
+});

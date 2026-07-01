@@ -104,6 +104,15 @@ export class Executor {
     return this._halted;
   }
 
+  /**
+   * Crash recovery — call once at process startup. Actions left 'running' by a
+   * crashed process are orphaned (no executor is advancing them); reset them to
+   * 'pending' so run() re-picks them. Returns the recovered action ids.
+   */
+  recoverOrphanedActions(): string[] {
+    return this.db.recoverOrphanedRunning();
+  }
+
   async run(): Promise<void> {
     this._idle = false;
 

@@ -80,6 +80,17 @@ self.onmessage = (event: MessageEvent<WorkerInit | WorkerCommand>) => {
       },
     });
 
+    // Crash recovery: a previous process may have died with actions still
+    // marked 'running' (e.g. the server was killed mid-build). Reset them to
+    // 'pending' so the executor resumes them instead of leaving them orphaned.
+    const recovered = executor.recoverOrphanedActions();
+    if (recovered.length) {
+      console.log(
+        `[executor] crash recovery: re-queued ${recovered.length} orphaned action(s): ${recovered.join(", ")}`,
+      );
+      self.postMessage({ type: "stats_refresh" });
+    }
+
     // Start the executor loop
     self.postMessage({ type: "executor_state", data: { state: "running" } });
     runLoop();

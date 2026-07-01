@@ -98,6 +98,14 @@ Which peer's graph a task goes in is a placement decision — heavy / long / **u
 horsepower); quick / local-file / trusted work stays local. When clear, orca decides; when
 ambiguous, it **asks** — [[principle-gate-before-reifying]] applied to placement.
 
+**Isolation is load-bearing, not a nicety** — live evidence: in a bookmark-api eval a
+build agent's smoke-test cleanup `pkill -f server.ts` matched the orchestrator
+(`bun … server.ts`) and SIGTERM'd it — the untrusted agent DoS'd the server running it.
+Without namespace / container / peer isolation, an agent's arbitrary bash reaches the
+orchestrator. Interim guards landed (the Bash tool refuses `pkill`/`killall`; the executor
+recovers orphaned in-flight actions on restart), but the real fix is running untrusted
+builds on a **disposable worker peer** where the agent physically cannot touch the brain.
+
 The policy itself is a **built-in behavioral module** — orca's *constitution*, the top,
 orca-authored layer of the same context assembly as [[vision-context-as-graph]] (below
 project ground-plane and per-task prompt). It is **conditionally active** — dormant on a

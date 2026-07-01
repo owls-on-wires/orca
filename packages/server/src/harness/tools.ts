@@ -160,6 +160,20 @@ registerTool("Edit", {
 
 export const bashTool: ToolExecutor = async (input, ctx) => {
   const command = input.command as string;
+
+  // Guard: pkill/killall match processes by NAME/pattern, so they can kill
+  // processes outside this task — including the orca orchestrator itself (an
+  // agent's `pkill -f server.ts` matched and SIGTERM'd the server running it).
+  // Refuse them; the agent must kill a specific captured PID.
+  if (/(^|[\s;&|(])(pkill|killall)([\s;&|)]|$)/.test(command)) {
+    return {
+      output:
+        "Refused: `pkill`/`killall` match processes by name and can kill processes outside this task (including the orchestrator running you). " +
+        'Kill a specific process instead: capture its PID (e.g. `P=$!` after backgrounding, or `P=$(lsof -ti:PORT -sTCP:LISTEN)`) and `kill "$P"`.',
+      isError: true,
+    };
+  }
+
   const timeoutMs = ((input.timeout as number) ?? 120) * 1000;
 
   let proc: ReturnType<typeof Bun.spawn> | undefined;
