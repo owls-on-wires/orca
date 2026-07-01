@@ -18,8 +18,10 @@ For each capability, grade three levels:
   data; errors come back as sane client/server errors.
 
 Notes for the judge:
-- The service persists data (SQLite or equivalent). "Persistence" here means a
-  created todo is visible to later requests against the same running service.
+- The service persists data (SQLite or equivalent) durably and **safely under
+  concurrent access**. "Persistence" here means a created todo is visible to later
+  requests against the same running service, and simultaneous writes do not lose or
+  corrupt data.
 - Field names will vary (`completed`/`done`/`is_done`, `id`, etc.). Match on
   meaning. Truthy/falsy representations of the done flag are acceptable as long
   as they round-trip consistently.
@@ -96,7 +98,9 @@ requests to the same running service.
 - **FUNCTIONAL**: create a todo in one request, then in a separate request
   confirm it is listed/retrievable with the same data.
 - **ROBUST**: a sequence of create/update/delete operations leaves the store in a
-  consistent state (no duplicates, no ghosts, ids don't collide).
+  consistent state (no duplicates, no ghosts, ids don't collide). **Concurrent
+  writes are safe**: firing many simultaneous creates/updates loses no accepted
+  write and corrupts nothing — no last-writer-wins clobbering of the store.
 
 ## Capability 7 — Filter by completion status
 

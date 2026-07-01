@@ -2,7 +2,10 @@
 
 Build a small web service (a REST API) that lets a client keep track of a todo
 list. It runs on Bun and stores its data so that todos survive between requests —
-if a todo is created, a later request should still see it.
+if a todo is created, a later request should still see it. Expect multiple clients
+to use the service at the same time: simultaneous operations must not lose or
+corrupt data — every write the service accepts should survive, even under
+concurrent load.
 
 A todo is a simple thing: at minimum it has a **title** (the text of what needs
 doing) and a **done/complete flag** that tracks whether it's finished. It's also
