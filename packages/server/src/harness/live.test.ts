@@ -14,7 +14,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { runAgentLoop } from "./loop";
+import { runAgentLoop } from "../engine/agent-loop";
 import { getSecret } from "./secrets";
 import type { HarnessOptions } from "./types";
 

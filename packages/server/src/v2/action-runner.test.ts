@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach } from "bun:test";
+import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import {
   runAction,
   buildPredecessorPrompt,
@@ -119,8 +119,14 @@ describe("command action", () => {
 // ---------------------------------------------------------------------------
 
 describe("agent action", () => {
+  // These tests mock the legacy Claude Code SDK path (invokeSimple), which is
+  // opt-in in P2 (Orca's own loop is the default). Enable the SDK path here.
   beforeEach(() => {
+    process.env.ORCA_USE_CLAUDE_SDK = "1";
     mockInvokeSimple.mockClear();
+  });
+  afterEach(() => {
+    delete process.env.ORCA_USE_CLAUDE_SDK;
   });
 
   test("success with passed status → pass condition", async () => {
@@ -239,7 +245,11 @@ describe("agent action", () => {
 
 describe("predecessor output injection", () => {
   beforeEach(() => {
+    process.env.ORCA_USE_CLAUDE_SDK = "1";
     mockInvokeSimple.mockClear();
+  });
+  afterEach(() => {
+    delete process.env.ORCA_USE_CLAUDE_SDK;
   });
 
   test("formats predecessor outputs into prompt", () => {
@@ -353,6 +363,8 @@ describe("resolveNixEnv", () => {
   });
 
   test("passes env to invokeSimple for agent actions", async () => {
+    // The SDK path is opt-in (P2 fallback); enable it for this assertion.
+    process.env.ORCA_USE_CLAUDE_SDK = "1";
     // Verify the env field is passed through to invokeSimple
     const action = agentAction();
     mockInvokeSimple.mockClear();
@@ -373,5 +385,6 @@ describe("resolveNixEnv", () => {
     expect(mockInvokeSimple).toHaveBeenCalledTimes(1);
     const opts = mockInvokeSimple.mock.calls[0][0] as { env?: Record<string, string> };
     expect(opts.env).toBeUndefined();
+    delete process.env.ORCA_USE_CLAUDE_SDK;
   });
 });

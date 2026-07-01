@@ -8,7 +8,7 @@ import { invokeSimple } from "../engine/invoke";
 import type { InvokeResult, InvokeOptions } from "../engine/invoke";
 import { applyVars } from "../templates";
 import { buildNixCommand, buildNixScriptCommand } from "../nix";
-import { runAgentLoop } from "../harness/loop";
+import { runAgentLoop } from "../engine/agent-loop";
 import { resolveModel } from "../models/registry";
 import type { ScopeConfig, Toolset } from "../config/schema";
 import type { ActionConfig, ActionOutput, EdgeCondition, NixConfig } from "./schema";
@@ -307,11 +307,25 @@ async function invokeWithWatchdog(
 // Agent action
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether to use the legacy Claude Code SDK path instead of Orca's own agent
+ * loop. Opt-in fallback for one phase (P2); removed in P3. By default every
+ * agent action runs through Orca's Layer B loop — no `claude` binary.
+ */
+function useClaudeSdk(): boolean {
+  return process.env.ORCA_USE_CLAUDE_SDK === "1";
+}
+
 async function runAgentAction(
   action: ActionConfig,
   predecessorOutputs: PredecessorOutput[],
   options: RunOptions,
 ): Promise<ActionResult> {
+  // Default: Orca-owned agent loop (Layer B). The SDK path is opt-in only.
+  if (!useClaudeSdk()) {
+    return runAgentApiAction(action, predecessorOutputs, options);
+  }
+
   const params = action.params;
   const prompt = params.prompt as string;
   const systemPrompt = params.system_prompt as string | undefined;
@@ -377,6 +391,7 @@ async function runAgentApiAction(
   const prompt = params.prompt as string;
   const systemPrompt = params.system_prompt as string | undefined;
   const maxTurns = params.max_turns as number | undefined;
+  const toolset = params.toolset as Toolset | undefined;
   const outputSchema = (params.output_schema as object | undefined) ?? DEFAULT_OUTPUT_SCHEMA;
 
   // Build full prompt with predecessor injection
@@ -397,9 +412,10 @@ async function runAgentApiAction(
       systemPrompt,
       model: options.model,
       maxTurns,
+      toolset,
       outputSchema,
       cwd: resolve(options.projectDir),
-      env: nixSession?.env,
+      env: nixSession?.env as Record<string, string> | undefined,
       logPath: options.logPath,
       label: action.id,
       abortController: options.abortController,

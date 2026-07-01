@@ -4,7 +4,8 @@
  * Re-exports types and the main entry point.
  */
 
-export { runAgentLoop } from "./loop";
+export { runAgentLoop, agentLoop } from "../engine/agent-loop";
+export type { AgentLoopOptions, AgentLoopResult, AgentEvent } from "../engine/agent-loop";
 export { registerTool, getTool, getAllTools, getToolDefinitions } from "./tools";
 export type { HarnessResult, HarnessOptions, ToolDefinition, ToolExecutor, ToolContext, ToolResult } from "./types";
 export { estimateCost } from "./types";

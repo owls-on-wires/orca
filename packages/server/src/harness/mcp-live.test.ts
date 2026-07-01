@@ -9,7 +9,7 @@
 
 import { describe, test, expect, afterEach } from "bun:test";
 import { McpClient } from "./mcp";
-import { runAgentLoop } from "./loop";
+import { runAgentLoop } from "../engine/agent-loop";
 import { getSecret } from "./secrets";
 import type { HarnessOptions } from "./types";
 import { mkdtempSync } from "fs";

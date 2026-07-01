@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { runAgentLoop } from "./loop";
+import { runAgentLoop } from "../engine/agent-loop";
 import { getSecret } from "./secrets";
 import { readFileSync, mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
