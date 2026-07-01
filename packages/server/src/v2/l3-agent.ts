@@ -30,6 +30,8 @@ import type { CustomTool } from "../engine/agent-loop";
 import { runAgentLoop, type AgentLoopOptions } from "../engine/agent-loop";
 import type { ToolSchema } from "../models/types";
 import type { ModelRegistry } from "../models/registry";
+import { readdirSync, readFileSync, existsSync, statSync } from "fs";
+import { join, relative } from "path";
 
 // ---------------------------------------------------------------------------
 // Edit vocabulary (the `apply_graph_edits` tool input)
@@ -271,9 +273,91 @@ export function loopcraftSystemPrompt(): string {
     "is validated and committed atomically, so intermediate half-built states never",
     "trip the design-rule check. If a batch is rejected, read the issues and retry.",
     "",
+    "# Ground every concrete value in the real workspace",
+    "A WORKSPACE CONTEXT section below lists the project's ACTUAL files, its",
+    "package.json scripts, and the working directory. Use it: reference REAL files",
+    "from the tree (do not invent `src/index.ts` if the entry is `src/server.ts`),",
+    "wire command actions to the project's real test/build commands, and remember",
+    "command actions run IN the working directory — never `cd` elsewhere or invent",
+    "a path. If a detail you need is not shown, have a build agent discover it at",
+    "run time rather than guessing it.",
+    "",
     "When the circuit is built, call StructuredOutput with status 'passed' and a",
     "one-line summary of the loop you reified.",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Workspace grounding — inject the project's real files + conventions so the
+// planner wires concrete values (paths, commands) from reality, not guesses.
+// ---------------------------------------------------------------------------
+
+function workspaceGrounding(
+  cwd: string,
+  db: OrcaDatabase,
+  projectId?: string,
+): string {
+  const parts: string[] = [
+    "# WORKSPACE CONTEXT",
+    `Working directory: ${cwd}`,
+    "Command actions execute IN this directory — reference the real files below; do not invent paths or `cd` elsewhere.",
+  ];
+
+  const IGNORE = new Set([
+    "node_modules", ".git", ".orca", "dist", ".cache", "logs",
+  ]);
+  const files: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 3 || files.length >= 120) return;
+    let names: string[];
+    try { names = readdirSync(dir).sort(); } catch { return; }
+    for (const name of names) {
+      if (IGNORE.has(name)) continue;
+      if (name.startsWith(".") && name !== ".gitignore") continue;
+      const full = join(dir, name);
+      let st;
+      try { st = statSync(full); } catch { continue; }
+      const rel = relative(cwd, full);
+      if (st.isDirectory()) { files.push(rel + "/"); walk(full, depth + 1); }
+      else files.push(rel);
+      if (files.length >= 120) return;
+    }
+  };
+  walk(cwd, 0);
+  parts.push(
+    "Files:\n" +
+      (files.length ? files.map((f) => "  " + f).join("\n") : "  (empty)"),
+  );
+
+  try {
+    const pkgPath = join(cwd, "package.json");
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as Record<string, unknown>;
+      const scripts = pkg.scripts as Record<string, string> | undefined;
+      if (scripts && Object.keys(scripts).length) {
+        parts.push("package.json scripts: " + JSON.stringify(scripts));
+      }
+      const entry = (pkg.module as string) || (pkg.main as string);
+      if (entry) parts.push("package.json entry: " + entry);
+    }
+  } catch { /* no/invalid package.json */ }
+
+  try {
+    const actions = db
+      .listActions()
+      .filter((a) => !projectId || a.project_id === projectId);
+    if (actions.length) {
+      parts.push(
+        "Existing circuit actions (extend/modify these; do not duplicate):\n" +
+          actions
+            .slice(0, 25)
+            .map((a) => `  ${a.id} [${a.type}] ${a.status}`)
+            .join("\n"),
+      );
+    }
+  } catch { /* no db access */ }
+
+  return parts.join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -335,9 +419,11 @@ export async function runL3Turn(options: L3TurnOptions): Promise<L3TurnResult> {
     },
   );
 
+  const grounding = workspaceGrounding(options.cwd, options.db, options.projectId);
+
   const loopOptions: AgentLoopOptions = {
     prompt: options.message,
-    systemPrompt: loopcraftSystemPrompt(),
+    systemPrompt: loopcraftSystemPrompt() + "\n\n" + grounding,
     model: options.model,
     cwd: options.cwd,
     maxTurns: options.maxTurns ?? 12,
