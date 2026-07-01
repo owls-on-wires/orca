@@ -160,39 +160,58 @@ registerTool("Edit", {
 
 export const bashTool: ToolExecutor = async (input, ctx) => {
   const command = input.command as string;
-  const timeout = ((input.timeout as number) ?? 120) * 1000;
+  const timeoutMs = ((input.timeout as number) ?? 120) * 1000;
 
+  let proc: ReturnType<typeof Bun.spawn> | undefined;
   try {
-    const proc = Bun.spawn(["sh", "-c", command], {
+    proc = Bun.spawn(["sh", "-c", command], {
       cwd: ctx.cwd,
       stdout: "pipe",
       stderr: "pipe",
       env: ctx.env,
     });
+    const child = proc;
 
-    const timeoutId = setTimeout(() => {
-      // Kill the entire process group (sh + all children including backgrounded processes)
-      // This prevents backgrounded processes from holding stdout pipes open
-      try { process.kill(-proc.pid, "SIGTERM"); } catch { proc.kill(); }
-    }, timeout);
+    // Reading the pipes only resolves once they CLOSE. A backgrounded or
+    // long-lived child (e.g. an in-band server boot) keeps stdout open forever,
+    // so we must NOT unconditionally await the read — we race it against the
+    // timeout and return the moment the timeout fires, killing the command.
+    const readAll = Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]) as Promise<[string, string, number]>;
 
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
+    const TIMEOUT = Symbol("timeout");
+    const timeoutP = new Promise<typeof TIMEOUT>((resolve) =>
+      setTimeout(() => resolve(TIMEOUT), timeoutMs),
+    );
 
-    await proc.exited;
-    clearTimeout(timeoutId);
+    const raced = await Promise.race([readAll, timeoutP]);
 
-    const exitCode = proc.exitCode ?? 1;
+    if (raced === TIMEOUT) {
+      // Best-effort kill (process group first for backgrounded children, then
+      // the shell itself), then RETURN — do not await the possibly-open pipe.
+      try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} }
+      return {
+        output:
+          `Command timed out after ${timeoutMs / 1000}s and was killed. ` +
+          `Do not run a long-lived or blocking process (like starting a server) in the foreground: ` +
+          "background it AND redirect its output (e.g. `cmd >/tmp/out 2>&1 &`), or pass a shorter `timeout`.",
+        isError: true,
+      };
+    }
+
+    const [stdout, stderr, exitCode] = raced;
     const parts: string[] = [];
     if (stdout.trim()) parts.push(stdout.trim());
     if (stderr.trim()) parts.push(`STDERR:\n${stderr.trim()}`);
-    if (exitCode !== 0) parts.push(`Exit code: ${exitCode}`);
+    if ((exitCode ?? 1) !== 0) parts.push(`Exit code: ${exitCode}`);
 
     const output = parts.join("\n") || "(no output)";
     return { output: output.slice(0, 50000) };
   } catch (e: any) {
+    try { proc?.kill(); } catch {}
     return { output: `Error running command: ${e.message}`, isError: true };
   }
 };
