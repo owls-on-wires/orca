@@ -25,17 +25,30 @@ export type RunActionFn = (
   options: RunOptions,
 ) => Promise<ActionResult | WaitingResult>;
 
+export interface CircuitBreakerBreach {
+  reason: "cost" | "size";
+  total_cost: number;
+  graph_size: number;
+  limit: number;
+}
+
 export interface ExecutorOptions {
   projectDir: string;
   model?: string;
   scope?: ScopeConfig;
   runActionFn?: RunActionFn;
+  /** Global circuit-breaker: halt if total cost across all actions reaches this. */
+  maxTotalCost?: number;
+  /** Global circuit-breaker: halt if the graph grows to this many actions. */
+  maxGraphSize?: number;
   onActionStart?: (action: ActionConfig) => void;
   onActionEnd?: (action: ActionConfig, result: ActionResult) => void;
   onActionWaiting?: (action: ActionConfig) => void;
   onEdgeTraversed?: (from: string, to: string, condition: string) => void;
   onToolUse?: (action: ActionConfig, toolName: string, toolInput: Record<string, unknown>) => void;
   onUnhandledFailure?: (action: ActionConfig, condition: EdgeCondition) => void;
+  /** Fired when the global circuit-breaker trips (cost or size). */
+  onCircuitBreaker?: (breach: CircuitBreakerBreach) => void;
   onIdle?: () => void;
 }
 
@@ -61,6 +74,7 @@ export class Executor {
   private options: ExecutorOptions;
   private _paused = false;
   private _idle = true;
+  private _halted = false;
   private lastCompletedAction: string | null = null;
   private runActionFn: RunActionFn;
 
@@ -86,10 +100,29 @@ export class Executor {
     return this._idle;
   }
 
+  isHalted(): boolean {
+    return this._halted;
+  }
+
   async run(): Promise<void> {
     this._idle = false;
 
     while (true) {
+      // Global circuit-breaker: cap total cost + graph size. Checked before
+      // any work so a breach halts the whole build and escalates, rather than
+      // letting a runaway loop or an agent-driven graph explosion continue.
+      if (this._halted) {
+        this._idle = true;
+        return;
+      }
+      const breach = this.checkCircuitBreaker();
+      if (breach) {
+        this._halted = true;
+        this._idle = true;
+        this.options.onCircuitBreaker?.(breach);
+        return;
+      }
+
       // Check pause flag
       if (this._paused) {
         this._idle = true;
@@ -238,7 +271,7 @@ export class Executor {
         const completedAction = this.db.getAction(action.id)!;
         if (completedAction.output) {
           try {
-            handleSupervisorResult(this.db, completedAction.output);
+            handleSupervisorResult(this.db, completedAction.output, completedAction.id);
           } catch {
             // Supervisor errors should not crash the executor
           }
@@ -316,6 +349,35 @@ export class Executor {
     }
 
     return outputs;
+  }
+
+  /**
+   * Global circuit-breaker. Returns a breach descriptor when the whole-graph
+   * cost or size cap is reached, otherwise null. Distinct from `checkBudget`,
+   * which is a per-task cap; this is the last line of defense against a
+   * runaway build (cost) or an agent that explodes the circuit (size).
+   */
+  private checkCircuitBreaker(): CircuitBreakerBreach | null {
+    const { maxTotalCost, maxGraphSize } = this.options;
+    if (maxTotalCost === undefined && maxGraphSize === undefined) return null;
+
+    const raw = this.db.rawDb;
+    const totalCost =
+      (
+        raw
+          .query("SELECT COALESCE(SUM(cost_usd), 0) AS c FROM actions")
+          .get() as { c: number }
+      ).c;
+    const graphSize =
+      (raw.query("SELECT COUNT(*) AS n FROM actions").get() as { n: number }).n;
+
+    if (maxTotalCost !== undefined && totalCost >= maxTotalCost) {
+      return { reason: "cost", total_cost: totalCost, graph_size: graphSize, limit: maxTotalCost };
+    }
+    if (maxGraphSize !== undefined && graphSize >= maxGraphSize) {
+      return { reason: "size", total_cost: totalCost, graph_size: graphSize, limit: maxGraphSize };
+    }
+    return null;
   }
 
   private checkBudget(action: ActionConfig): boolean {

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { applyDelta, applyDeltas, validateGraph, serializeGraphForPrompt } from "./graph-ops";
+import {
+  applyDelta,
+  applyDeltas,
+  applyValidatedDelta,
+  validateGraph,
+  serializeGraphForPrompt,
+} from "./graph-ops";
 import type { GraphDelta } from "./schema";
 
 const SCHEMA = `
@@ -239,6 +245,176 @@ describe("validateGraph", () => {
 
     const issues = validateGraph(db);
     expect(issues.some((i) => i.includes("no outgoing edges"))).toBe(true);
+  });
+
+  // ── Legal loops vs illegal unbounded cycles ──
+
+  test("ACCEPTS a legal self-loop with an escape edge", () => {
+    // loop retries itself on fail, and escapes to `done` on pass.
+    applyDelta(db, { type: "add_action", action_id: "loop", action: { status: "pending" } });
+    applyDelta(db, { type: "add_action", action_id: "done", action: { status: "completed" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "loop", to_action: "loop", condition: "fail" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "loop", to_action: "done", condition: "pass" } });
+
+    expect(validateGraph(db)).toHaveLength(0);
+  });
+
+  test("ACCEPTS a self-loop whose pass condition terminates (no pass edge)", () => {
+    // loop retries on fail; a `pass` result completes the action (terminal escape).
+    applyDelta(db, { type: "add_action", action_id: "loop", action: { status: "pending" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "loop", to_action: "loop", condition: "fail" } });
+
+    expect(validateGraph(db)).toHaveLength(0);
+  });
+
+  test("ACCEPTS a legal two-node loop that can exit on pass", () => {
+    // a → b (pass), b → a (fail): b terminates on pass, so the loop is bounded.
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "pending" } });
+    applyDelta(db, { type: "add_action", action_id: "b", action: { status: "inactive" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "a", to_action: "b", condition: "pass" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "b", to_action: "a", condition: "fail" } });
+
+    expect(validateGraph(db)).toHaveLength(0);
+  });
+
+  test("REJECTS an unbounded self-loop on pass (never escapes)", () => {
+    applyDelta(db, { type: "add_action", action_id: "spin", action: { status: "pending" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "spin", to_action: "spin", condition: "pass" } });
+
+    const issues = validateGraph(db);
+    expect(issues.some((i) => i.includes("Unbounded cycle"))).toBe(true);
+  });
+
+  test("REJECTS an unbounded two-node cycle with no escape", () => {
+    // a → b (pass), b → a (pass): both loop forever on pass, no exit.
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "pending" } });
+    applyDelta(db, { type: "add_action", action_id: "b", action: { status: "inactive" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "a", to_action: "b", condition: "pass" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "b", to_action: "a", condition: "pass" } });
+
+    const issues = validateGraph(db);
+    expect(issues.some((i) => i.includes("Unbounded cycle"))).toBe(true);
+  });
+
+  // ── Reachability ──
+
+  test("does not false-flag reachable actions or entry roots", () => {
+    // root (completed) → next (pending): reachable. island (pending, 0 incoming)
+    // → next: island is itself an entry root, so nothing is unreachable.
+    applyDelta(db, { type: "add_action", action_id: "root", action: { status: "completed" } });
+    applyDelta(db, { type: "add_action", action_id: "next", action: { status: "pending" } });
+    applyDelta(db, { type: "add_action", action_id: "island", action: { status: "pending" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "root", to_action: "next", condition: "pass" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "island", to_action: "next", condition: "pass" } });
+
+    expect(validateGraph(db).some((i) => i.includes("unreachable"))).toBe(false);
+  });
+
+  test("detects a dormant action that can never be activated", () => {
+    // start is the live entry. u ↔ v are inactive and only reachable from each
+    // other — no live path ever activates them → unreachable.
+    applyDelta(db, { type: "add_action", action_id: "start", action: { status: "completed" } });
+    applyDelta(db, { type: "add_action", action_id: "u", action: { status: "inactive" } });
+    applyDelta(db, { type: "add_action", action_id: "v", action: { status: "inactive" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "u", to_action: "v", condition: "fail" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "v", to_action: "u", condition: "fail" } });
+
+    expect(validateGraph(db).some((i) => i.includes("unreachable"))).toBe(true);
+  });
+
+  // ── Size caps ──
+
+  test("enforces action size cap", () => {
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "completed" } });
+    applyDelta(db, { type: "add_action", action_id: "b", action: { status: "completed" } });
+    applyDelta(db, { type: "add_action", action_id: "c", action: { status: "completed" } });
+
+    expect(validateGraph(db, { maxActions: 2 }).some((i) => i.includes("action cap"))).toBe(true);
+    expect(validateGraph(db, { maxActions: 3 }).some((i) => i.includes("action cap"))).toBe(false);
+  });
+
+  test("enforces edge size cap", () => {
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "completed" } });
+    applyDelta(db, { type: "add_action", action_id: "b", action: { status: "completed" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "a", to_action: "b", condition: "pass" } });
+    applyDelta(db, { type: "add_edge", edge: { from_action: "a", to_action: "b", condition: "fail" } });
+
+    expect(validateGraph(db, { maxEdges: 1 }).some((i) => i.includes("edge cap"))).toBe(true);
+    expect(validateGraph(db, { maxEdges: 2 }).some((i) => i.includes("edge cap"))).toBe(false);
+  });
+});
+
+describe("applyValidatedDelta", () => {
+  function snapshot(): string {
+    const actions = db.query("SELECT * FROM actions ORDER BY id").all();
+    const edges = db.query("SELECT * FROM edges ORDER BY id").all();
+    return JSON.stringify({ actions, edges });
+  }
+
+  test("commits a valid mutation", () => {
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "completed" } });
+
+    const result = applyValidatedDelta(db, [
+      { type: "add_action", action_id: "b", action: { status: "completed" } },
+      { type: "add_edge", edge: { from_action: "a", to_action: "b", condition: "pass" } },
+    ]);
+
+    expect(result.ok).toBe(true);
+    expect(db.query("SELECT id FROM actions WHERE id = ?").get("b")).not.toBeNull();
+  });
+
+  test("commits a legal loop-with-escape mutation", () => {
+    applyDelta(db, { type: "add_action", action_id: "done", action: { status: "completed" } });
+
+    const result = applyValidatedDelta(db, [
+      { type: "add_action", action_id: "loop", action: { status: "pending" } },
+      { type: "add_edge", edge: { from_action: "loop", to_action: "loop", condition: "fail" } },
+      { type: "add_edge", edge: { from_action: "loop", to_action: "done", condition: "pass" } },
+    ]);
+
+    expect(result.ok).toBe(true);
+  });
+
+  test("rolls back a validation failure (unbounded cycle) byte-identical", () => {
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "completed" } });
+    const before = snapshot();
+
+    const result = applyValidatedDelta(db, [
+      { type: "add_action", action_id: "spin", action: { status: "pending" } },
+      { type: "add_edge", edge: { from_action: "spin", to_action: "spin", condition: "pass" } },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe("validation");
+    expect(snapshot()).toBe(before);
+  });
+
+  test("rolls back an execution failure (duplicate id) byte-identical", () => {
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "completed" } });
+    const before = snapshot();
+
+    const result = applyValidatedDelta(db, [
+      { type: "add_action", action_id: "a", action: {} },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe("execution");
+    expect(snapshot()).toBe(before);
+  });
+
+  test("rolls back the whole batch when a later delta is invalid", () => {
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "completed" } });
+    const before = snapshot();
+
+    const result = applyValidatedDelta(db, [
+      { type: "add_action", action_id: "valid", action: { status: "completed" } },
+      { type: "remove_action", action_id: "nonexistent" },
+    ]);
+
+    expect(result.ok).toBe(false);
+    // The first (valid) delta must not persist.
+    expect(db.query("SELECT id FROM actions WHERE id = ?").get("valid")).toBeNull();
+    expect(snapshot()).toBe(before);
   });
 });
 

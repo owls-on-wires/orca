@@ -65,6 +65,15 @@ self.onmessage = (event: MessageEvent<WorkerInit | WorkerCommand>) => {
         self.postMessage({ type: "unhandled_failure", data: { action_id: action.id, condition, output: action.output }, actionId: action.id });
         self.postMessage({ type: "stats_refresh" });
       },
+      onCircuitBreaker: (breach) => {
+        // Escalate a tripped global breaker as an unhandled failure so the
+        // primary agent / human is notified over SSE.
+        self.postMessage({
+          type: "unhandled_failure",
+          data: { reason: "circuit_breaker", breach },
+        });
+        self.postMessage({ type: "stats_refresh" });
+      },
       onIdle: () => {
         self.postMessage({ type: "executor_state", data: { state: "idle", pending_count: 0 } });
         self.postMessage({ type: "stats_refresh" });

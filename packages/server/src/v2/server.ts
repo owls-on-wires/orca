@@ -35,7 +35,11 @@ export type SSEEventType =
   | "action_completed"
   | "action_waiting"
   | "edge_traversed"
-  | "executor_state";
+  | "executor_state"
+  | "unhandled_failure"
+  | "invalid_mutation"
+  | "tool_use"
+  | "stats";
 
 export interface SSEClient {
   controller: ReadableStreamDefaultController;

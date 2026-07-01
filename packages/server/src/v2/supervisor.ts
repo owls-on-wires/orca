@@ -5,7 +5,7 @@
 
 import { Database } from "bun:sqlite";
 import type { ActionConfig, ActionOutput, EdgeCondition, GraphDelta } from "./schema";
-import { serializeGraphForPrompt, applyDeltas } from "./graph-ops";
+import { serializeGraphForPrompt, applyValidatedDelta, type ValidatedDeltaResult } from "./graph-ops";
 import { OrcaDatabase } from "./db";
 
 // ---------------------------------------------------------------------------
@@ -163,11 +163,15 @@ function supervisorEditToGraphDelta(edit: SupervisorOutput["edits"][number]): Gr
   }
 }
 
-export function handleSupervisorResult(db: OrcaDatabase, output: ActionOutput): void {
+export function handleSupervisorResult(
+  db: OrcaDatabase,
+  output: ActionOutput,
+  supervisorActionId?: string,
+): ValidatedDeltaResult | null {
   const parsed = parseSupervisorOutput(output);
-  if (!parsed) return;
+  if (!parsed) return null;
 
-  // Convert edits to graph deltas, skipping invalid ones
+  // Convert edits to graph deltas, skipping malformed ones.
   const deltas: GraphDelta[] = [];
   for (const edit of parsed.edits) {
     const delta = supervisorEditToGraphDelta(edit);
@@ -176,14 +180,15 @@ export function handleSupervisorResult(db: OrcaDatabase, output: ActionOutput): 
     }
   }
 
-  // Apply deltas using the raw db handle
+  // Route every mutation through the governed chokepoint. On failure the graph
+  // is rolled back byte-identical and an `invalid_mutation` event is recorded
+  // (when we know which supervisor produced it). Validation errors reject the
+  // whole batch; execution errors likewise leave the graph untouched.
+  let result: ValidatedDeltaResult | null = null;
   if (deltas.length > 0) {
-    const rawDb = db.rawDb;
-    try {
-      applyDeltas(rawDb, deltas);
-    } catch {
-      // Invalid deltas should not crash the executor
-    }
+    result = applyValidatedDelta(db.rawDb, deltas, {
+      recordFor: supervisorActionId,
+    });
   }
 
   // Handle retry_action
@@ -193,4 +198,6 @@ export function handleSupervisorResult(db: OrcaDatabase, output: ActionOutput): 
       db.updateAction(parsed.retry_action, { status: "pending" });
     }
   }
+
+  return result;
 }
