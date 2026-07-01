@@ -1,0 +1,27 @@
+{
+  "description": "Test baseline pinned at P1 (ModelProvider seam) so 'no regression' is mechanically checkable despite known-flaky/environmental failures. Regenerate with: cd packages/server && SKIP_LIVE=1 bun test. A later phase regresses if a NEW failing test appears outside knownFailing.",
+  "pinnedAt": "2026-06-30",
+  "phase": "P1",
+  "command": "cd packages/server && SKIP_LIVE=1 bun test",
+  "minPass": 715,
+  "knownFailing": [
+    "DELETE /builds/:id > stops a build",
+    "GET /builds/:id > returns build detail after creation",
+    "GET /builds/:id/events > returns SSE stream with initial status event",
+    "GET /builds/:id/logs > returns stdout and stderr arrays",
+    "POST /builds > build appears in list after creation",
+    "POST /builds > creates a build with dir (in-place, no clone)",
+    "POST /builds > creates a build with valid repo",
+    "POST /builds/:id/intervene > accepts valid intervention",
+    "POST /builds/:id/intervene > returns 400 for invalid action",
+    "Git > checkout > switches to an existing branch",
+    "Git > clone > clones a bare repo and returns a Git instance",
+    "Git > currentBranch > returns the current branch name",
+    "Git > push > pushes to a remote bare repo"
+  ],
+  "knownFlaky": [
+    "invoke > sdk invocation > invoke function exists and is async generator",
+    "Tier 5: Supervisor > supervisor returns graph delta — params updated"
+  ],
+  "notes": "All knownFailing are environmental: server-endpoint tests need the compiled 'orca' binary on PATH; Git tests need a 'main' branch that this branch (orca-v1) lacks. None touch the agent runtime. knownFlaky tests flip pass/fail across runs and use the SDK or mock agents, not the ModelProvider seam."
+}

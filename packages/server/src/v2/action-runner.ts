@@ -9,6 +9,7 @@ import type { InvokeResult, InvokeOptions } from "../engine/invoke";
 import { applyVars } from "../templates";
 import { buildNixCommand, buildNixScriptCommand } from "../nix";
 import { runAgentLoop } from "../harness/loop";
+import { resolveModel } from "../models/registry";
 import type { ScopeConfig, Toolset } from "../config/schema";
 import type { ActionConfig, ActionOutput, EdgeCondition, NixConfig } from "./schema";
 
@@ -68,21 +69,6 @@ const DEFAULT_OUTPUT_SCHEMA = {
   },
   required: ["status", "summary"],
 };
-
-// ---------------------------------------------------------------------------
-// Model name resolution (short names → API model IDs)
-// ---------------------------------------------------------------------------
-
-const MODEL_ALIASES: Record<string, string> = {
-  opus: "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5-20251001",
-};
-
-function resolveModelId(model?: string): string {
-  if (!model) return "claude-sonnet-4-6";
-  return MODEL_ALIASES[model] ?? model;
-}
 
 // ---------------------------------------------------------------------------
 // Shared condition classification from structured output
@@ -343,6 +329,9 @@ async function runAgentAction(
 
   const fullPrompt = parts.join("\n\n");
 
+  // Resolve the model to a provider via the registry (Layer A seam).
+  const resolved = resolveModel(options.model);
+
   // Open nix env session — keeps TMPDIR alive for the duration of the agent
   const nixSession = openNixEnvSession(options.projectDir, options.nix);
 
@@ -350,7 +339,7 @@ async function runAgentAction(
   const result = await invokeWithWatchdog({
     prompt: fullPrompt,
     projectDir: resolve(options.projectDir),
-    model: options.model,
+    model: resolved.apiModel,
     toolset,
     maxTurns,
     outputSchema,
@@ -406,7 +395,7 @@ async function runAgentApiAction(
     const result = await runAgentLoop({
       prompt: fullPrompt,
       systemPrompt,
-      model: resolveModelId(options.model),
+      model: options.model,
       maxTurns,
       outputSchema,
       cwd: resolve(options.projectDir),
