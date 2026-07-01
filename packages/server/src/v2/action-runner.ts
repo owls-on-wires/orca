@@ -73,6 +73,22 @@ const DEFAULT_OUTPUT_SCHEMA = {
   required: ["status", "summary"],
 };
 
+// Default execution discipline prepended to every executor-run agent action.
+// Build agents kept booting servers in-band to smoke-test, which never returns
+// cleanly (a server holds its stdout open) and burns the whole turn budget in a
+// retry loop. Verification belongs to the paired test node, not the build agent.
+const AGENT_EXECUTION_DISCIPLINE = [
+  "You are executing ONE node of a build graph: write and edit code to satisfy this",
+  "node's task, then finish. Verification is a SEPARATE node's job.",
+  "",
+  "Do NOT start servers or other long-running / blocking processes to test your work",
+  "(no `bun run server.ts`, no dev servers, no backgrounded daemons). A dedicated test",
+  "node runs the project's test suite to verify runtime behavior — that is not your",
+  "job here, and doing it wastes your entire turn budget: a server never exits, so the",
+  "shell blocks or times out. To self-check, use STATIC checks only — a typecheck",
+  "(`bunx tsc --noEmit`) or re-reading the code — then stop.",
+].join("\n");
+
 // ---------------------------------------------------------------------------
 // Shared condition classification from structured output
 // ---------------------------------------------------------------------------
@@ -232,7 +248,10 @@ async function runAgentApiAction(
 ): Promise<ActionResult> {
   const params = action.params;
   const prompt = params.prompt as string;
-  const systemPrompt = params.system_prompt as string | undefined;
+  const authoredSystemPrompt = params.system_prompt as string | undefined;
+  const systemPrompt = authoredSystemPrompt
+    ? `${AGENT_EXECUTION_DISCIPLINE}\n\n${authoredSystemPrompt}`
+    : AGENT_EXECUTION_DISCIPLINE;
   const maxTurns = params.max_turns as number | undefined;
   const toolset = params.toolset as Toolset | undefined;
   const outputSchema = (params.output_schema as object | undefined) ?? DEFAULT_OUTPUT_SCHEMA;
