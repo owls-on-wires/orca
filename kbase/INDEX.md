@@ -40,6 +40,7 @@ for conventions.
 - `architecture/current-state.md` — orca v2 vs. the six missing pieces (as of 2026-06-30).
 
 ## Specs (decided requirements)
+- `specs/eval-harness.md` — prompt-in/software-out fixture eval: `orca build` + headless `claude -p` judge → scored rubric.
 - `specs/model-provider.md` — model-agnostic agent runtime; drop Claude Code (ADR-0004 keystone).
 - `specs/tui.md` — conversational TUI with live circuit view (piece #1).
 - `specs/README.md` — what goes here and how specs are promoted.
