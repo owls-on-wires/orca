@@ -27,15 +27,16 @@ now provides:
   section and a *Bug-Hunt Focus* that a skeptic uses to try to break the build.
   The rubric names example fields/status codes only as illustrations, never as
   required spellings.
-- **A minimal, bootable scaffold** — just enough to `install` and start green:
-  `package.json`, `tsconfig.json`, a `.gitignore`, and an entry point that does
-  nothing but answer a health check (for services) or export an empty module (for
-  the library). No feature code, no feature tests. The scaffold boots to a
-  passing/`200` baseline so the builder starts from working ground, not a broken
-  one.
-- **Optional domain context** — where a fixture needs background beyond the
-  prompt (e.g. `EPICS.md` for link-board), it ships as read-only context. It
-  frames the domain but is not a contract.
+- **A minimal, bootable `scaffold/`** — a subdirectory with just enough to
+  `install` and start green: `package.json`, `tsconfig.json`, a `.gitignore`, and
+  an entry point that does nothing but answer a health check (for services) or
+  export an empty module (for the library). No feature code, no feature tests. It
+  boots to a passing/`200` baseline so the builder starts from working ground, not
+  a broken one.
+
+**On disk:** `fixtures/<name>/` holds `PROMPT.md`, `RUBRIC.md`, and `scaffold/`.
+The harness copies **only `scaffold/`** into the builder's workspace and feeds
+`PROMPT.md` as the goal — `RUBRIC.md` (the answer key) never reaches the builder.
 
 A **`reference/`** folder (a known-good solution to diff the build against) is
 **deferred** — none of the fixtures ship one yet.
@@ -114,10 +115,10 @@ comments with voting and soft-delete, public profiles with karma/reputation, and
 moderation + search. The **low** end of the ladder: the prompt is pure product
 vision ("build me a link-sharing community — think Hacker News") with no
 endpoints, schema, or task list; the builder must decompose and design the whole
-thing. Ships `EPICS.md` as read-only domain context.
+thing.
 
 - **Scaffold**: `package.json`, `tsconfig.json`, a health-only `src/server.ts`
-  (reads `PORT`, defaults to 37003), `EPICS.md`, `.gitignore`.
+  (reads `PORT`, defaults to 37003), `.gitignore`.
 - **Boots to**: `bun install`, `bun run src/server.ts`, `GET /health` → `{"status":"ok"}`.
 </content>
 </invoke>
