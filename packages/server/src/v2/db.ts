@@ -6,6 +6,7 @@ import type {
   ActionStatus,
   EdgeCondition,
   EdgeConfig,
+  GroundPlaneEntry,
   HistoryEntry,
   ProjectConfig,
 } from "./schema";
@@ -58,6 +59,15 @@ CREATE TABLE IF NOT EXISTS history (
   event_type TEXT NOT NULL,
   data JSON,
   timestamp TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ground_plane (
+  project_id TEXT NOT NULL DEFAULT '',
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  source TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
@@ -404,4 +414,76 @@ export class OrcaDatabase {
   getActionsByTag(tag: string): ActionConfig[] {
     return this.listActions({ tag });
   }
+
+  // ── Ground plane (durable shared context channel) ──
+
+  /**
+   * Write (upsert) a ground-plane entry. `projectId` omitted / "" is a global
+   * entry visible to every task; a non-empty `projectId` scopes it to one
+   * project. `source` records provenance (who wrote it).
+   */
+  setGroundPlane(
+    key: string,
+    value: string,
+    opts: { projectId?: string; source?: string } = {},
+  ): void {
+    const projectId = opts.projectId ?? "";
+    this.db.run(
+      `INSERT INTO ground_plane (project_id, key, value, source, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, key) DO UPDATE SET
+         value = excluded.value,
+         source = excluded.source,
+         updated_at = excluded.updated_at`,
+      [projectId, key, value, opts.source ?? null, new Date().toISOString()],
+    );
+  }
+
+  /**
+   * Read the effective value for a key. A project-scoped entry (when
+   * `projectId` is given) shadows a global entry with the same key; if none
+   * exists at either scope, returns null.
+   */
+  getGroundPlane(key: string, projectId?: string): string | null {
+    if (projectId) {
+      const scoped = this.db
+        .query("SELECT value FROM ground_plane WHERE project_id = ? AND key = ?")
+        .get(projectId, key) as { value: string } | null;
+      if (scoped) return scoped.value;
+    }
+    const global = this.db
+      .query("SELECT value FROM ground_plane WHERE project_id = '' AND key = ?")
+      .get(key) as { value: string } | null;
+    return global ? global.value : null;
+  }
+
+  /**
+   * The effective ground plane for a task: all global entries, overlaid with
+   * the project's own entries (project overrides global on a shared key).
+   * Sorted by key for stable injection.
+   */
+  listGroundPlane(projectId?: string): GroundPlaneEntry[] {
+    const merged = new Map<string, GroundPlaneEntry>();
+    const globals = this.db
+      .query("SELECT * FROM ground_plane WHERE project_id = ''")
+      .all() as Record<string, unknown>[];
+    for (const row of globals) merged.set(row.key as string, rowToGroundPlane(row));
+    if (projectId) {
+      const scoped = this.db
+        .query("SELECT * FROM ground_plane WHERE project_id = ?")
+        .all(projectId) as Record<string, unknown>[];
+      for (const row of scoped) merged.set(row.key as string, rowToGroundPlane(row));
+    }
+    return [...merged.values()].sort((a, b) => a.key.localeCompare(b.key));
+  }
+}
+
+function rowToGroundPlane(row: Record<string, unknown>): GroundPlaneEntry {
+  return {
+    project_id: (row.project_id as string) ?? "",
+    key: row.key as string,
+    value: row.value as string,
+    source: (row.source as string) ?? null,
+    updated_at: row.updated_at as string,
+  };
 }

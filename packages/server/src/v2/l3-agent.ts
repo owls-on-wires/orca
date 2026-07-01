@@ -238,6 +238,75 @@ export function createGraphEditTool(
 }
 
 // ---------------------------------------------------------------------------
+// The ground-plane write tool (the shared context channel)
+// ---------------------------------------------------------------------------
+
+const SET_GROUND_PLANE_SCHEMA: ToolSchema = {
+  name: "set_ground_plane",
+  description:
+    "Write a durable, SHARED fact to the ground plane — the curated global " +
+    "context every task in this project references at run time (spec, settled " +
+    "decisions, conventions, the test command). Use this for facts MANY tasks " +
+    "need, so per-task prompts stay specific and you avoid copying a shared fact " +
+    "into every prompt (and O(N) rewrites when it changes). Keyed by `key`; " +
+    "writing an existing key overwrites it.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      key: {
+        type: "string",
+        description: "Stable identifier for this fact (e.g. 'spec', 'test-command', 'api-conventions').",
+      },
+      value: { type: "string", description: "The fact/content to store." },
+    },
+    required: ["key", "value"],
+  },
+};
+
+/** Largest ground-plane value the planner may write (legibility cap). */
+export const MAX_GROUND_PLANE_VALUE_CHARS = 20_000;
+
+export interface GroundPlaneToolOptions {
+  projectId?: string;
+  /** Provenance stamped on writes (who authored the entry). */
+  source?: string;
+}
+
+/**
+ * Build the `set_ground_plane` custom tool bound to a database. This is an ACT
+ * tool (a mutation of shared context) — distinct from read-only recon.
+ */
+export function createGroundPlaneTool(
+  db: OrcaDatabase,
+  opts: GroundPlaneToolOptions = {},
+): CustomTool {
+  return {
+    schema: SET_GROUND_PLANE_SCHEMA,
+    execute: (input) => {
+      const key = typeof input.key === "string" ? input.key.trim() : "";
+      const value = input.value;
+      if (!key) {
+        return { output: "set_ground_plane requires a non-empty 'key'.", isError: true };
+      }
+      if (typeof value !== "string") {
+        return { output: "set_ground_plane requires a string 'value'.", isError: true };
+      }
+      if (value.length > MAX_GROUND_PLANE_VALUE_CHARS) {
+        return {
+          output:
+            `Rejected: ground-plane value for '${key}' is ${value.length} chars, ` +
+            `over the ${MAX_GROUND_PLANE_VALUE_CHARS}-char cap. Keep shared context ` +
+            `concise, or split it across keys.`,
+          isError: true,
+        };
+      }
+      db.setGroundPlane(key, value, { projectId: opts.projectId, source: opts.source ?? "l3" });
+      return { output: `Ground plane updated: '${key}' (${value.length} chars).` };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Loopcraft system prompt
 // ---------------------------------------------------------------------------
 
@@ -253,10 +322,18 @@ export function loopcraftSystemPrompt(): string {
     "  your plan in the ACTUAL workspace — read a config, grep for an entry point,",
     "  glob a directory — BEFORE you author prompts. You have NO Write/Edit/Bash:",
     "  you never touch files yourself; the actions you reify do the building.",
-    "- ACT: `apply_graph_edits` is your ONLY way to change anything. Authoring an",
-    "  action's `prompt`, wiring edges, updating another task's context — all of it",
-    "  is a graph mutation. Recon is seeing; mutation is doing.",
+    "- ACT: `apply_graph_edits` reifies actions and edges (and authors/updates",
+    "  their prompts); `set_ground_plane` writes the SHARED context channel. Both",
+    "  are mutations. Recon is seeing; mutation is doing.",
     "Recon first when a goal is non-trivial; don't recon a one-line change.",
+    "",
+    "# Two context channels: per-task prompt vs. the ground plane",
+    "Each action's effective context has a specific `prompt` AND a shared ground",
+    "plane it references at run time. Keep prompts SPECIFIC to the task. Put facts",
+    "MANY tasks need — the spec, settled decisions, the test command, conventions —",
+    "in the ground plane via `set_ground_plane`, so you don't copy a shared fact",
+    "into every prompt (which bloats them and forces O(N) rewrites when it changes).",
+    "Seed the ground plane from recon before authoring prompts.",
     "",
     "# The circuit model",
     "- An ACTION is a node: type `agent` (an LLM sub-agent given a `prompt`) or",
@@ -446,6 +523,11 @@ export async function runL3Turn(options: L3TurnOptions): Promise<L3TurnResult> {
     },
   );
 
+  const groundPlaneTool = createGroundPlaneTool(options.db, {
+    projectId: options.projectId,
+    source: options.label ?? "l3",
+  });
+
   const grounding = workspaceGrounding(options.cwd, options.db, options.projectId);
 
   const loopOptions: AgentLoopOptions = {
@@ -458,7 +540,7 @@ export async function runL3Turn(options: L3TurnOptions): Promise<L3TurnResult> {
     // mutation tool: it can OBSERVE the workspace to ground its plan, but it
     // still ACTS only by mutation — no Write/Edit/Bash in this toolset.
     toolset: options.reconToolset ?? "read_only",
-    customTools: [tool],
+    customTools: [tool, groundPlaneTool],
     registry: options.registry,
     apiKey: options.apiKey,
     apiUrl: options.apiUrl,

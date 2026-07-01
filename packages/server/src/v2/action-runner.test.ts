@@ -294,6 +294,34 @@ describe("predecessor output injection", () => {
     expect(callArgs.prompt).toContain("### setup.cmd (passed)");
     expect(callArgs.prompt).toContain("Build something");
   });
+
+  test("ground plane is injected into the agent prompt (shared channel)", async () => {
+    mockInvokeSimple.mockClear();
+    mockInvokeSimple.mockResolvedValueOnce({
+      output: { status: "passed", summary: "Done" },
+      costUsd: 0.01,
+      sessionId: "s7",
+      numTurns: 1,
+      durationMs: 500,
+      isError: false,
+    });
+
+    const action = agentAction();
+    await runAction(action, [], {
+      ...defaultOptions,
+      groundPlane: [
+        { project_id: "", key: "spec", value: "Build a todo API", source: "l3", updated_at: "t" },
+      ],
+    });
+
+    expect(mockInvokeSimple).toHaveBeenCalledTimes(1);
+    const callArgs = mockInvokeSimple.mock.calls[0][0] as { prompt: string };
+    expect(callArgs.prompt).toContain("## Ground plane");
+    expect(callArgs.prompt).toContain("### spec");
+    expect(callArgs.prompt).toContain("Build a todo API");
+    // The action's own prompt is still present.
+    expect(callArgs.prompt).toContain("Build something");
+  });
 });
 
 // ---------------------------------------------------------------------------

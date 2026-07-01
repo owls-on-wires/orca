@@ -8,7 +8,7 @@ import { applyVars } from "../templates";
 import { buildNixCommand, buildNixScriptCommand } from "../nix";
 import { invokeSimple } from "../engine/invoke";
 import type { ScopeConfig, Toolset } from "../config/schema";
-import type { ActionConfig, ActionOutput, EdgeCondition, NixConfig } from "./schema";
+import type { ActionConfig, ActionOutput, EdgeCondition, GroundPlaneEntry, NixConfig } from "./schema";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +35,12 @@ export interface RunOptions {
   logPath?: string;
   onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
   abortController?: AbortController;
+  /**
+   * The effective ground plane for this action — the shared, referenced context
+   * channel. Injected (as a section) into an agent action's prompt at run time
+   * so per-task prompts stay specific while global facts live in one place.
+   */
+  groundPlane?: GroundPlaneEntry[];
 }
 
 export interface PredecessorOutput {
@@ -113,6 +119,18 @@ function classifyResult(
 // ---------------------------------------------------------------------------
 // Predecessor output injection
 // ---------------------------------------------------------------------------
+
+export function buildGroundPlanePrompt(entries: GroundPlaneEntry[]): string {
+  if (!entries || entries.length === 0) return "";
+
+  const sections = entries.map((e) => `### ${e.key}\n${e.value}`);
+  return (
+    "## Ground plane (shared project context)\n" +
+    "Durable, shared facts curated for every task in this project. Reference " +
+    "them; do not restate them.\n\n" +
+    sections.join("\n\n")
+  );
+}
 
 export function buildPredecessorPrompt(predecessors: PredecessorOutput[]): string {
   if (predecessors.length === 0) return "";
@@ -219,8 +237,15 @@ async function runAgentApiAction(
   const toolset = params.toolset as Toolset | undefined;
   const outputSchema = (params.output_schema as object | undefined) ?? DEFAULT_OUTPUT_SCHEMA;
 
-  // Build full prompt with predecessor injection
+  // Assemble the effective context from the three graph-native channels:
+  //   1. shared — the ground plane (global facts, referenced not copied),
+  //   2. edge-carried — predecessor outputs, and
+  //   3. authored — this action's own prompt.
   const parts: string[] = [];
+  const groundPlanePrompt = buildGroundPlanePrompt(options.groundPlane ?? []);
+  if (groundPlanePrompt) {
+    parts.push(groundPlanePrompt);
+  }
   const predecessorPrompt = buildPredecessorPrompt(predecessorOutputs);
   if (predecessorPrompt) {
     parts.push(predecessorPrompt);

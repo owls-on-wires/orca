@@ -193,6 +193,9 @@ export class Executor {
           ? (name, input) => this.options.onToolUse!(runningAction, name, input)
           : undefined,
         abortController,
+        // Inject the effective ground plane (global + this project's entries)
+        // so the shared context channel reaches the action at run time.
+        groundPlane: this.db.listGroundPlane(runningAction.project_id ?? undefined),
       };
 
       const WALL_TIMEOUT_SENTINEL = Symbol("wall_timeout");

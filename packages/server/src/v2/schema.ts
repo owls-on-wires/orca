@@ -199,3 +199,22 @@ export function createEdge(
 export function isTerminalCondition(condition: EdgeCondition): boolean {
   return condition === "pass";
 }
+
+// ---------------------------------------------------------------------------
+// Ground plane — the durable, shared context channel
+// ---------------------------------------------------------------------------
+
+/**
+ * A single entry in the ground plane: a curated, shared fact (spec, decision,
+ * convention) that tasks REFERENCE at run time rather than each copying into
+ * their prompt. `project_id === ""` means a global entry visible to every task;
+ * a non-empty `project_id` scopes it to one project and overrides a global
+ * entry with the same key. `source` records provenance (e.g. "l3").
+ */
+export interface GroundPlaneEntry {
+  project_id: string;
+  key: string;
+  value: string;
+  source: string | null;
+  updated_at: string;
+}
