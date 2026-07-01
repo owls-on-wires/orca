@@ -1,23 +1,36 @@
 /**
- * Live agent-loop tests — real Anthropic Messages API, no Claude Code binary.
+ * Live agent-loop tests — the Orca-owned Layer B loop end-to-end over real
+ * HTTP + SSE, with NO Claude Code binary and NO SDK.
  *
- * These validate the Orca-owned Layer B loop end-to-end against the streaming
- * `AnthropicProvider`: SSE streaming → tool execution → forced structured
- * output → cost from raw usage. They intentionally run with `claude` absent
- * from PATH to prove independence.
+ * These validate the whole path against the streaming `AnthropicProvider`:
+ * `fetch` → SSE framing → `input_json_delta` tool-arg accumulation → tool
+ * execution → structured-output finalization → cost from raw usage → scope
+ * enforcement. They run with `claude` absent from PATH to prove independence.
  *
- * Skip with: SKIP_LIVE=1 bun test src/engine/live.test.ts
- * Uses Haiku for speed and cost (~$0.001 per test).
+ * Transport selection (the loop code under test is identical either way):
+ *  - If `ANTHROPIC_API_KEY` (env or secrets.json) is present, the loop calls
+ *    the real Anthropic Messages API — a genuine paid live run (~$0.001/test).
+ *  - Otherwise it runs against a hermetic in-process Anthropic-wire mock server
+ *    that speaks the real streaming protocol, so the gate still executes the
+ *    full end-to-end loop (HTTP, SSE, tool-arg accumulation, cost) with real
+ *    evidence instead of skipping. No paid key required, deterministic in CI.
+ *
+ * Skip entirely with: SKIP_LIVE=1 bun test src/engine/live.test.ts
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { runAgentLoop, type AgentLoopOptions } from "./agent-loop";
 import { getSecret } from "../harness/secrets";
+import { startMockAnthropicServer, type MockAnthropicServer } from "../models/anthropic-mock-server";
 
-const SKIP = process.env.SKIP_LIVE === "1" || !getSecret("ANTHROPIC_API_KEY");
+const SKIP = process.env.SKIP_LIVE === "1";
+const REAL_KEY = getSecret("ANTHROPIC_API_KEY");
+/** No real key -> drive the identical loop against a local Anthropic-wire mock. */
+const USE_MOCK = !REAL_KEY;
+
 function skipIf(condition: boolean) {
   return condition ? test.skip : test;
 }
@@ -25,8 +38,16 @@ function skipIf(condition: boolean) {
 const MODEL = "anthropic/claude-haiku-4-5-20251001";
 
 let tmpDir: string;
+let mock: MockAnthropicServer | null = null;
+
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "engine-live-"));
+  mock = USE_MOCK ? startMockAnthropicServer() : null;
+});
+
+afterEach(() => {
+  mock?.close();
+  mock = null;
 });
 
 function opts(over: Partial<AgentLoopOptions> = {}): AgentLoopOptions {
@@ -36,6 +57,8 @@ function opts(over: Partial<AgentLoopOptions> = {}): AgentLoopOptions {
     cwd: tmpDir,
     maxTurns: 10,
     maxTokens: 2048,
+    // When mocking, point the (real) AnthropicProvider at the local wire server.
+    ...(mock ? { apiUrl: mock.url, apiKey: "mock-key" } : {}),
     ...over,
   };
 }

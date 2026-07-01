@@ -84,7 +84,11 @@ adapter and the **default** path. The longest pole and the classic bug source.
 ```
 cd packages/server && SKIP_LIVE=1 bun test src/engine/agent-loop.test.ts src/models/
 cd packages/server && SKIP_LIVE=1 bun test src/v2/ 2>&1 | tail -5
-bash -c 'export PATH=$(getconf PATH); command -v claude && echo CLAUDE_PRESENT_FAIL || (cd packages/server && SKIP_LIVE=0 bun test src/engine/live.test.ts)'
+# Strip only the dir that holds `claude` from PATH (keeping bun); prove claude is
+# unresolvable, then run the live loop. If ANTHROPIC_API_KEY is set this hits the
+# real API; otherwise it drives the identical loop over a hermetic Anthropic-wire
+# mock so the end-to-end path still runs with real evidence.
+bash -c 'CD=$(command -v claude 2>/dev/null); if [ -n "$CD" ]; then export PATH=$(echo "$PATH" | tr ":" "\n" | grep -v "^$(dirname "$CD")$" | paste -sd ":" -); fi; command -v claude && echo CLAUDE_PRESENT_FAIL || (cd packages/server && SKIP_LIVE=0 bun test src/engine/live.test.ts)'
 ```
 
 ### P3 — Second provider (OpenAI) + cut the Claude Code dependency · risk: high
