@@ -28,7 +28,7 @@ import { McpManager, type McpServerConfig } from "../harness/mcp";
 import { checkToolUse, scopeSystemPrompt } from "../scope";
 import type { ScopeConfig, Toolset } from "../config/schema";
 import { TOOLSETS } from "../config/schema";
-import type { ToolContext, ToolDefinition } from "../harness/types";
+import type { ToolContext, ToolDefinition, ToolResult } from "../harness/types";
 import { resolveModel, computeCost, type ModelRegistry } from "../models/registry";
 import type { StreamOptions } from "../models/provider";
 import type {
@@ -56,6 +56,20 @@ export interface AgentLoopResult {
   isError: boolean;
 }
 
+/**
+ * A tool the caller injects into the loop directly (not from the built-in
+ * file/bash registry). Its `execute` runs in-process against the loop's tool
+ * context. This is how the L3 primary agent gets a graph-mutation toolset whose
+ * "tools" commit deltas to the durable circuit (P5).
+ */
+export interface CustomTool {
+  schema: ToolSchema;
+  execute: (
+    input: Record<string, unknown>,
+    ctx: ToolContext,
+  ) => Promise<ToolResult> | ToolResult;
+}
+
 /** InvokeEvent-shaped, tagged with the source action/node id. */
 export interface AgentEvent {
   type: "text" | "tool_use" | "result";
@@ -76,6 +90,18 @@ export interface AgentLoopOptions {
   outputSchema?: object;
   /** Restrict the built-in tool registry to a named toolset. */
   toolset?: Toolset;
+  /**
+   * Tools injected directly into the loop (executed via their own `execute`),
+   * in addition to (or instead of) the built-in registry. Used for the L3
+   * primary agent's graph-mutation toolset.
+   */
+  customTools?: CustomTool[];
+  /**
+   * When false, the built-in file/bash tool registry is excluded so only
+   * `customTools` (+ MCP) are available — a pure-mutation agent with no file
+   * access. Defaults to true.
+   */
+  includeBuiltinTools?: boolean;
   cwd: string;
   env?: Record<string, string>;
   apiKey?: string;
@@ -159,12 +185,21 @@ function buildSystemPrompt(options: AgentLoopOptions): string {
   if (options.scope && (options.scope.writable?.length || options.scope.readable?.length)) {
     parts.push(scopeSystemPrompt(options.scope));
   }
-  parts.push(
-    `Your working directory is ${options.cwd}. All tool calls (Read, Write, Edit, Bash, Glob, Grep) ` +
-      `execute relative to this directory. Do NOT cd to other directories. ` +
+  if (options.includeBuiltinTools === false) {
+    // Pure-mutation agent (no file/bash tools): only the working-directory
+    // context + the final-answer contract are relevant.
+    parts.push(
       `When you have completed your task, you MUST call the ${OUTPUT_TOOL_NAME} tool with your result. ` +
-      `Set status to 'passed' if successful, 'failed' if not.`,
-  );
+        `Set status to 'passed' if successful, 'failed' if not.`,
+    );
+  } else {
+    parts.push(
+      `Your working directory is ${options.cwd}. All tool calls (Read, Write, Edit, Bash, Glob, Grep) ` +
+        `execute relative to this directory. Do NOT cd to other directories. ` +
+        `When you have completed your task, you MUST call the ${OUTPUT_TOOL_NAME} tool with your result. ` +
+        `Set status to 'passed' if successful, 'failed' if not.`,
+    );
+  }
   return parts.join("\n\n");
 }
 
@@ -237,8 +272,12 @@ export async function* agentLoop(options: AgentLoopOptions): AsyncGenerator<Agen
   let lastText = "";
 
   const outputTool = buildOutputTool(options.outputSchema);
+  const customTools = options.customTools ?? [];
+  const customToolMap = new Map(customTools.map((t) => [t.schema.name, t]));
+  const builtins = options.includeBuiltinTools === false ? [] : builtinTools(options.toolset);
   const realTools: ToolSchema[] = [
-    ...builtinTools(options.toolset),
+    ...builtins,
+    ...customTools.map((t) => t.schema),
     ...mcpManager.getToolDefinitions().map(toToolSchema),
   ];
   const allTools: ToolSchema[] = [...realTools, outputTool];
@@ -382,6 +421,14 @@ export async function* agentLoop(options: AgentLoopOptions): AsyncGenerator<Agen
           tool_input: call.input,
         });
         options.onToolUse?.(call.name, call.input);
+
+        // Injected custom tools (e.g. the L3 graph-mutation toolset) run first.
+        const customTool = customToolMap.get(call.name);
+        if (customTool) {
+          const result = await customTool.execute(call.input, toolContext);
+          toolResults.push({ type: "tool_result", toolCallId: call.id, content: result.output, isError: result.isError });
+          continue;
+        }
 
         const mcpResult = await mcpManager.callTool(call.name, call.input);
         if (mcpResult) {

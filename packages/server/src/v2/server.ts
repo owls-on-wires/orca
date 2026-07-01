@@ -6,6 +6,7 @@
 import { OrcaDatabase } from "./db";
 import { expandConfig, reimportTasks, expandTask } from "./config";
 import { Executor } from "./executor";
+import { runL3Turn, type L3TurnOptions, type L3TurnResult } from "./l3-agent";
 import {
   createAction,
   type ActionConfig,
@@ -20,6 +21,9 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
+/** Pluggable L3 turn runner — real by default, mockable in tests. */
+export type L3Runner = (opts: L3TurnOptions) => Promise<L3TurnResult>;
+
 export interface ServerOptions {
   port?: number;
   dbPath?: string;
@@ -27,6 +31,10 @@ export interface ServerOptions {
   executor?: Executor;
   /** If true, don't start executor loop automatically */
   noExecutor?: boolean;
+  /** L3 primary-agent defaults for the conversational /chat endpoint. */
+  l3?: { cwd?: string; model?: string };
+  /** Override the L3 turn runner (tests inject a mock; default hits a model). */
+  l3Runner?: L3Runner;
 }
 
 // SSE event types
@@ -39,7 +47,10 @@ export type SSEEventType =
   | "unhandled_failure"
   | "invalid_mutation"
   | "tool_use"
-  | "stats";
+  | "stats"
+  | "l3_message"
+  | "graph_edit"
+  | "l3_result";
 
 export interface SSEClient {
   controller: ReadableStreamDefaultController;
@@ -53,6 +64,8 @@ interface ServerState {
   typeDefaults: Record<string, ActionTypeDefaults>;
   startTime: number;
   sseClients: Set<SSEClient>;
+  l3: { cwd: string; model?: string };
+  l3Runner: L3Runner;
 }
 
 // ---------------------------------------------------------------------------
@@ -638,6 +651,85 @@ async function handleRespond(
   return json({ status: "completed", condition });
 }
 
+// POST /chat — converse with the L3 primary agent (non-blocking braid).
+//
+// The POST returns immediately; the L3 turn runs in the background and narrates
+// into the braid over SSE: `l3_message` (streamed text), `graph_edit` (a
+// circuit-edit card per applied/rejected batch), and a terminal `l3_result`.
+// The agent's tools ARE graph mutations, so a chat request reifies work into the
+// durable circuit; every mutation passes through the P4 governed chokepoint.
+let l3MessageSeq = 0;
+async function handleChat(
+  req: Request,
+  state: ServerState,
+): Promise<Response> {
+  const body = (await parseBody(req)) as Record<string, unknown> | null;
+  if (!body) return jsonError("Invalid JSON body");
+
+  const message = body.message as string | undefined;
+  if (!message || typeof message !== "string") {
+    return jsonError("Body must include a 'message' string");
+  }
+
+  const projectId = body.project_id as string | undefined;
+  const project = projectId ? state.db.getProject(projectId) : null;
+  const taskTag = (body.task_tag as string | undefined) ?? undefined;
+  const model = (body.model as string | undefined) ?? project?.model ?? state.l3.model;
+  const cwd = project?.project_dir ?? state.l3.cwd;
+  const messageId = `l3-${++l3MessageSeq}`;
+
+  // Kick off the turn WITHOUT awaiting — the braid is non-blocking.
+  const turn = state.l3Runner({
+    db: state.db,
+    message,
+    cwd,
+    model,
+    projectId,
+    taskTag,
+    label: messageId,
+    onText: (text) => broadcast(state, "l3_message", { message_id: messageId, source: "l3", text }),
+    onGraphEdit: (record) => {
+      broadcast(state, "graph_edit", {
+        message_id: messageId,
+        source: "l3",
+        ok: record.ok,
+        edits: record.edits,
+        issues: record.issues,
+        error: record.error,
+      });
+      if (record.ok) {
+        // New pending actions may now be schedulable.
+        if (executorWorker) sendToWorker({ type: "kick" });
+        else if (state.executor) kickInlineExecutor(state);
+      }
+    },
+  });
+
+  turn
+    .then((result) => {
+      broadcast(state, "l3_result", {
+        message_id: messageId,
+        source: "l3",
+        output: result.output,
+        cost_usd: result.costUsd,
+        num_turns: result.numTurns,
+        is_error: result.isError,
+        applied: result.edits.filter((e) => e.ok).length,
+        rejected: result.edits.filter((e) => !e.ok).length,
+      });
+    })
+    .catch((e: unknown) => {
+      broadcast(state, "l3_result", {
+        message_id: messageId,
+        source: "l3",
+        is_error: true,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    });
+
+  return json({ message_id: messageId, status: "accepted" }, 202);
+}
+
 // PATCH /actions (bulk update by tag)
 async function handleBulkUpdate(
   req: Request,
@@ -929,6 +1021,7 @@ const routes: Route[] = [
   defineRoute("POST", "/actions/:id/retry", handleRetry),
   defineRoute("POST", "/actions/:id/skip", handleSkip),
   defineRoute("POST", "/actions/:id/respond", handleRespond),
+  defineRoute("POST", "/chat", handleChat),
   defineRoute("POST", "/edges", handleCreateEdge),
   defineRoute("DELETE", "/edges/:id", handleDeleteEdge),
   defineRoute("GET", "/defaults", handleGetDefaults),
@@ -1018,6 +1111,8 @@ export function startServer(options: ServerOptions = {}) {
     typeDefaults: {},
     startTime: Date.now(),
     sseClients,
+    l3: { cwd: options.l3?.cwd ?? process.cwd(), model: options.l3?.model },
+    l3Runner: options.l3Runner ?? runL3Turn,
   };
 
   if (!options.noExecutor && !executor) {
