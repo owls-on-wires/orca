@@ -296,3 +296,81 @@ describe("CG1: read-only recon tools alongside apply_graph_edits", () => {
     expect(db.getAction("demo.test")!.status).toBe("inactive");
   });
 });
+
+describe("CG3: prompt provenance + context-size governance", () => {
+  test("authoring a prompt records provenance (params + history event)", async () => {
+    const result = await runL3Turn({
+      db,
+      message: "Build a loop.",
+      cwd: tmpDir,
+      model: "fake/model",
+      registry: registryFor(scriptedProvider(LOOP_EDITS)),
+      taskTag: "task:demo",
+      label: "l3-planner",
+    });
+    expect(result.edits[0].ok).toBe(true);
+
+    // The authored prompt is provenance-tagged on the action...
+    const build = db.getAction("demo.build")!;
+    expect(build.params.prompt).toBe("Write the feature");
+    expect(build.params.prompt_source).toBe("l3-planner");
+
+    // ...and a `prompt_authored` history event was recorded.
+    const events = db.getHistory("demo.build");
+    const authored = events.find((e) => e.event_type === "prompt_authored");
+    expect(authored).toBeDefined();
+    expect((authored!.data as any).source).toBe("l3-planner");
+    expect((authored!.data as any).chars).toBe("Write the feature".length);
+
+    // The command action authored no prompt → no such event.
+    const testEvents = db.getHistory("demo.test");
+    expect(testEvents.some((e) => e.event_type === "prompt_authored")).toBe(false);
+  });
+
+  test("an over-cap prompt rewrite is rejected by governance; graph untouched", async () => {
+    const bigEdits: GraphEdit[] = [
+      { op: "add_action", id: "big.build", type: "agent", prompt: "x".repeat(500), initial: true, max_iterations: 5 },
+      { op: "add_action", id: "big.test", type: "command", command: "bun test" },
+      { op: "add_edge", from: "big.build", to: "big.test", condition: "pass" },
+      { op: "add_edge", from: "big.test", to: "big.build", condition: "fail" },
+    ];
+
+    const result = await runL3Turn({
+      db,
+      message: "Build with a giant prompt.",
+      cwd: tmpDir,
+      model: "fake/model",
+      registry: registryFor(scriptedProvider(bigEdits)),
+      taskTag: "task:big",
+      maxPromptChars: 100,
+    });
+
+    expect(result.edits.length).toBe(1);
+    expect(result.edits[0].ok).toBe(false);
+    expect(result.edits[0].issues.join(" ")).toContain("prompt exceeds size cap");
+    // Rolled back — nothing landed.
+    expect(db.getAction("big.build")).toBeNull();
+    expect(db.getAction("big.test")).toBeNull();
+    // The turn itself still completes (agent got the rejection as a result).
+    expect(result.isError).toBe(false);
+  });
+
+  test("a prompt within the cap is accepted", async () => {
+    const okEdits: GraphEdit[] = [
+      { op: "add_action", id: "ok.build", type: "agent", prompt: "short prompt", initial: true, max_iterations: 5 },
+      { op: "add_action", id: "ok.test", type: "command", command: "bun test" },
+      { op: "add_edge", from: "ok.build", to: "ok.test", condition: "pass" },
+      { op: "add_edge", from: "ok.test", to: "ok.build", condition: "fail" },
+    ];
+    const result = await runL3Turn({
+      db,
+      message: "Build with a small prompt.",
+      cwd: tmpDir,
+      model: "fake/model",
+      registry: registryFor(scriptedProvider(okEdits)),
+      maxPromptChars: 100,
+    });
+    expect(result.edits[0].ok).toBe(true);
+    expect(db.getAction("ok.build")).not.toBeNull();
+  });
+});

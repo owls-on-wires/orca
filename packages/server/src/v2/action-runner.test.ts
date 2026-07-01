@@ -363,7 +363,8 @@ describe("resolveNixEnv", () => {
       expect(typeof result.PATH).toBe("string");
     }
     // Either way, it shouldn't throw
-  });
+    // A nix-shell evaluation can exceed the default 5s timeout under full-suite load.
+  }, 30000);
 
   test("returns fresh env on each call (no stale cache)", () => {
     const tmpDir = mkdtempSync(join(require("os").tmpdir(), "orca-nix-"));
@@ -380,7 +381,9 @@ describe("resolveNixEnv", () => {
       // Fresh calls — not the same reference
       expect(r1).not.toBe(r2);
     }
-  });
+    // Two serial nix-shell evaluations can exceed the default 5s timeout
+    // when the full suite runs and the machine is busy; allow more headroom.
+  }, 30000);
 
   test("passes env to the agent loop for agent actions", async () => {
     // Verify the env field is passed through to the agent loop.

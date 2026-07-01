@@ -141,6 +141,13 @@ export interface ValidateOptions {
   maxActions?: number;
   /** Maximum number of edges permitted in the graph. */
   maxEdges?: number;
+  /**
+   * Maximum characters permitted in any action's `params.prompt`. Keeps
+   * computed context (planners authoring other tasks' prompts) legible by
+   * rejecting a prompt rewrite that balloons past the cap. Undefined = no cap
+   * (so callers that don't opt in are unaffected).
+   */
+  maxPromptChars?: number;
 }
 
 interface GraphSnapshot {
@@ -284,6 +291,29 @@ export function validateGraph(
     issues.push(
       `Graph exceeds edge cap: ${edges.length} > ${options.maxEdges}`,
     );
+  }
+
+  // --- Context-size governance: cap per-action prompt length ---------------
+  // Keeps computed context (planners rewriting task prompts) legible. Only
+  // enforced when a cap is supplied; the delta chokepoint blames a rewrite
+  // only for a NEW over-cap prompt, never a pre-existing one.
+  if (options.maxPromptChars !== undefined) {
+    const rows = db
+      .query("SELECT id, params FROM actions")
+      .all() as Array<{ id: string; params: string }>;
+    for (const row of rows) {
+      let prompt: unknown;
+      try {
+        prompt = JSON.parse(row.params || "{}").prompt;
+      } catch {
+        continue;
+      }
+      if (typeof prompt === "string" && prompt.length > options.maxPromptChars) {
+        issues.push(
+          `Action '${row.id}' prompt exceeds size cap: ${prompt.length} > ${options.maxPromptChars}`,
+        );
+      }
+    }
   }
 
   // --- Dangling edges ------------------------------------------------------
@@ -436,6 +466,7 @@ export function applyValidatedDelta(
   const validateOpts: ValidateOptions = {
     maxActions: options.maxActions,
     maxEdges: options.maxEdges,
+    maxPromptChars: options.maxPromptChars,
   };
 
   const issuesBefore = new Set(validateGraph(db, validateOpts));

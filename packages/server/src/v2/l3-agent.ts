@@ -76,6 +76,25 @@ export interface GraphEditToolOptions extends ApplyValidatedOptions {
   taskTag?: string;
   /** Extra tags stamped on every created action. */
   tags?: string[];
+  /**
+   * Provenance stamped on any prompt this batch authors/rewrites (who wrote
+   * it): recorded both as `params.prompt_source` on the action and as a
+   * `prompt_authored` history event, so a human/supervisor can see and correct
+   * how a task's computed context came to be. */
+  source?: string;
+}
+
+/**
+ * The prompt text an edit authors/rewrites, if any. Prompts arrive either via
+ * the top-level `prompt` field or nested under `params.prompt`.
+ */
+function editAuthoredPrompt(edit: GraphEdit): string | undefined {
+  if (edit.op === "add_action" || edit.op === "update_action") {
+    if (typeof edit.prompt === "string") return edit.prompt;
+    const nested = (edit.params as Record<string, unknown> | undefined)?.prompt;
+    if (typeof nested === "string") return nested;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +110,8 @@ function editToDelta(edit: GraphEdit, opts: GraphEditToolOptions): GraphDelta {
       if (edit.prompt !== undefined) params.prompt = edit.prompt;
       if (edit.command !== undefined) params.command = edit.command;
       if (edit.max_iterations !== undefined) params.max_iterations = edit.max_iterations;
+      // Provenance: stamp who authored the prompt (context legibility rail).
+      if (opts.source && params.prompt !== undefined) params.prompt_source = opts.source;
 
       const tags: string[] = [];
       if (opts.projectId) tags.push(`project:${opts.projectId}`);
@@ -107,9 +128,14 @@ function editToDelta(edit: GraphEdit, opts: GraphEditToolOptions): GraphDelta {
     case "remove_action":
       if (!edit.id) throw new Error("remove_action requires 'id'");
       return { type: "remove_action", action_id: edit.id };
-    case "update_action":
+    case "update_action": {
       if (!edit.id) throw new Error("update_action requires 'id'");
-      return { type: "update_params", action_id: edit.id, params: edit.params ?? {} };
+      const params: Record<string, unknown> = { ...(edit.params ?? {}) };
+      if (edit.prompt !== undefined) params.prompt = edit.prompt;
+      // Provenance: a prompt rewrite records who rewrote it.
+      if (opts.source && params.prompt !== undefined) params.prompt_source = opts.source;
+      return { type: "update_params", action_id: edit.id, params };
+    }
     case "add_edge":
       if (!edit.from || !edit.to || !edit.condition) {
         throw new Error("add_edge requires 'from', 'to', and 'condition'");
@@ -176,6 +202,9 @@ const APPLY_EDITS_SCHEMA: ToolSchema = {
   },
 };
 
+/** Default per-action prompt size cap the L3 planner is governed by. */
+export const MAX_PROMPT_CHARS = 50_000;
+
 export interface GraphEditRecord {
   ok: boolean;
   edits: GraphEdit[];
@@ -221,6 +250,20 @@ export function createGraphEditTool(
       onApply?.(record);
 
       if (result.ok) {
+        // Provenance: record a legible history event for every prompt this
+        // batch authored/rewrote (who, which op, how large). Best-effort.
+        for (const edit of edits) {
+          const authored = editAuthoredPrompt(edit);
+          if (authored !== undefined && edit.id) {
+            try {
+              db.appendHistory(edit.id, "prompt_authored", {
+                source: opts.source ?? null,
+                op: edit.op,
+                chars: authored.length,
+              });
+            } catch { /* never let logging mask a successful apply */ }
+          }
+        }
         return { output: `Applied ${deltas.length} edit(s) to the circuit.` };
       }
       if (result.kind === "validation") {
@@ -334,6 +377,8 @@ export function loopcraftSystemPrompt(): string {
     "in the ground plane via `set_ground_plane`, so you don't copy a shared fact",
     "into every prompt (which bloats them and forces O(N) rewrites when it changes).",
     "Seed the ground plane from recon before authoring prompts.",
+    "Prompts you author are provenance-tagged and size-capped for legibility: keep",
+    "each prompt tight; a bloated prompt is rejected by the design-rule check.",
     "",
     "# The circuit model",
     "- An ACTION is a node: type `agent` (an LLM sub-agent given a `prompt`) or",
@@ -474,6 +519,12 @@ export interface L3TurnOptions {
   maxActions?: number;
   maxEdges?: number;
   /**
+   * Context-size governance: the largest `params.prompt` (chars) a planner may
+   * author/rewrite for any action. A batch introducing an over-cap prompt is
+   * rejected by the DRC. Defaults to `MAX_PROMPT_CHARS`.
+   */
+  maxPromptChars?: number;
+  /**
    * Read-only recon toolset the planner may use ALONGSIDE `apply_graph_edits`
    * to observe the workspace before/while planning. Defaults to `read_only`
    * (Read/Grep/Glob) — no Write/Edit/Bash, so acting stays mutation-only.
@@ -516,6 +567,8 @@ export async function runL3Turn(options: L3TurnOptions): Promise<L3TurnResult> {
       tags: options.tags,
       maxActions: options.maxActions,
       maxEdges: options.maxEdges,
+      maxPromptChars: options.maxPromptChars ?? MAX_PROMPT_CHARS,
+      source: options.label ?? "l3",
     },
     (record) => {
       editRecords.push(record);

@@ -417,6 +417,49 @@ describe("applyValidatedDelta", () => {
     expect(db.query("SELECT id FROM actions WHERE id = ?").get("valid")).toBeNull();
     expect(snapshot()).toBe(before);
   });
+
+  // CG3: context-size governance on the DRC chokepoint.
+  test("rejects a prompt rewrite over the maxPromptChars cap", () => {
+    applyDelta(db, { type: "add_action", action_id: "a", action: { status: "completed" } });
+    const before = snapshot();
+
+    const result = applyValidatedDelta(
+      db,
+      [
+        {
+          type: "update_params",
+          action_id: "a",
+          params: { prompt: "x".repeat(200) },
+        },
+      ],
+      { maxPromptChars: 100 },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe("validation");
+    expect(result.issues.join(" ")).toContain("prompt exceeds size cap");
+    expect(snapshot()).toBe(before); // rolled back
+  });
+
+  test("accepts a prompt within the cap and does not blame a pre-existing over-cap prompt", () => {
+    // Pre-existing over-cap prompt (predates the mutation).
+    applyDelta(db, {
+      type: "add_action",
+      action_id: "old",
+      action: { status: "completed", params: { prompt: "y".repeat(300) } },
+    });
+
+    // An unrelated valid add with a small prompt must NOT be rejected for the
+    // pre-existing violation.
+    const result = applyValidatedDelta(
+      db,
+      [{ type: "add_action", action_id: "new", action: { status: "completed", params: { prompt: "tiny" } } }],
+      { maxPromptChars: 100 },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(db.query("SELECT id FROM actions WHERE id = ?").get("new")).not.toBeNull();
+  });
 });
 
 describe("serializeGraphForPrompt", () => {
