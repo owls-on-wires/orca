@@ -28,12 +28,13 @@ export function applyDelta(db: Database, delta: GraphDelta): void {
       }
       const action = createAction({ id: delta.action_id, ...delta.action });
       db.run(
-        `INSERT INTO actions (id, type, status, params, output, tags, cost_usd, iteration, created_at, updated_at, started_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO actions (id, type, status, project_id, params, output, tags, cost_usd, iteration, created_at, updated_at, started_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           action.id,
           action.type,
           action.status,
+          action.project_id ?? null,
           JSON.stringify(action.params),
           action.output ? JSON.stringify(action.output) : null,
           JSON.stringify(action.tags),

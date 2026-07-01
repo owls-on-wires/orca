@@ -94,9 +94,10 @@ none is reachable.
 - **Scope is project-wide, not per-action.** Any plan to "parallelize disjoint
   write-scope" has nothing to compare until per-action scope exists. See
   [[open-question-per-action-scope-source]].
-- **`add_action` deltas don't persist `project_id`** (the column is omitted from the
-  `applyDelta` INSERT); L3/supervisor-created actions carry the `project:<id>` **tag**
-  instead, which is what escalation scoping keys on.
+- **`add_action` deltas persist `project_id`** (fixed) — the `applyDelta` INSERT and
+  the `graph-ops.test` schema were both missing the column, so L3/supervisor-created
+  actions ran unscoped (server cwd, default model) instead of resolving their
+  project's cwd/model/scope. Surfaced by the first prompt-in fixture eval.
 - **Inline-executor SSE wiring is caller-supplied.** The worker path broadcasts
   action events automatically; an in-process `Executor` (test/embedded) must wire its
   callbacks to `broadcast()` itself (see `tui-detach.test.ts`).

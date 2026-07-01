@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS actions (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
+  project_id TEXT,
   params JSON NOT NULL DEFAULT '{}',
   output JSON,
   tags JSON NOT NULL DEFAULT '[]',
