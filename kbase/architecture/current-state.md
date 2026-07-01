@@ -43,15 +43,38 @@ The Claude Code dependency is **gone**. The agent runtime is Orca's own:
 
 ## L3 primary agent (P5, done)
 
-`v2/l3-agent.ts` is the conversational front door. Its **tools ARE graph mutations**:
-a single injected `apply_graph_edits` batch tool (via `agent-loop.ts` `customTools`,
-built-in file/bash tools excluded) that routes every mutation through the P4
-`applyValidatedDelta` chokepoint — it **cannot** commit an invalid or unbounded
-circuit. A loopcraft system prompt steers it to reify a build→test→route-back loop
-with a back-edge, an escape condition, and a `max_iterations` cap. `POST /chat`
-(`v2/server.ts`) runs a turn **non-blocking**: the POST returns `202` immediately and
-narration arrives as SSE (`l3_message` / `graph_edit` / `l3_result`), reusing
-`broadcast()`.
+`v2/l3-agent.ts` is the conversational front door. It **observes read-only and acts
+by mutation** (see `vision/context-as-graph.md`): alongside a read-only recon toolset
+(`Read`/`Grep`/`Glob` via `agent-loop.ts` `toolset: "read_only"` — **no** Write/Edit/Bash)
+it has two ACT tools — `apply_graph_edits` (reify actions/edges, author/rewrite their
+prompts) and `set_ground_plane` (write the shared context channel). Every graph mutation
+routes through the P4 `applyValidatedDelta` chokepoint — it **cannot** commit an invalid
+or unbounded circuit. A loopcraft system prompt steers it to recon first, then decompose
+a goal into several grounded build→test stages (each a back-edge + escape + `max_iterations`
+loop). `POST /chat` (`v2/server.ts`) runs a turn **non-blocking**: the POST returns `202`
+immediately and narration arrives as SSE (`l3_message` / `graph_edit` / `l3_result`),
+reusing `broadcast()`.
+
+## Context as graph state (context-as-graph, done)
+
+There is no separate memory subsystem — a task's effective context is assembled from
+three graph-native channels in `v2/action-runner.ts`: (1) the **shared ground plane**,
+(2) **edge-carried** predecessor outputs, (3) the task's **authored** `prompt`.
+
+- **Ground-plane store** (`db.ts`): a `ground_plane` table (`project_id=""` = global;
+  a project entry overrides a global one on the same key) with `setGroundPlane` /
+  `getGroundPlane` / `listGroundPlane`. The executor loads the effective set and passes
+  it via `RunOptions.groundPlane`; `action-runner.ts` `buildGroundPlanePrompt` injects it
+  at run time. The planner writes it with `set_ground_plane` (provenance-tagged, size-capped).
+- **Recon** — the read-only toolset above is the memory *read* path: the planner reads
+  the workspace/graph to ground its plan before authoring prompts.
+- **Provenance + governance** (legibility rail): a planner-authored prompt is stamped with
+  `params.prompt_source` and a `prompt_authored` history event; `validateGraph`'s
+  `maxPromptChars` cap rejects an over-large prompt rewrite at the DRC chokepoint
+  (`MAX_PROMPT_CHARS` default in `l3-agent.ts`).
+- **Late binding**: a PENDING task's prompt can be rewritten and takes effect at run
+  (the executor reads the action fresh); once RUNNING the prompt is frozen —
+  `applyDelta`'s `update_params` rejects a running-action prompt rewrite.
 
 ## Status against the six missing pieces (from `explorations/circuit.md`)
 
@@ -61,7 +84,7 @@ narration arrives as SSE (`l3_message` / `graph_edit` / `l3_result`), reusing
 | 2 | Scope-aware scheduler | partial | Serial: `executor.ts` picks one action, races one. Scope is project-wide, not per-action |
 | 3 | Gating (act vs. delegate) | partial | Everything routes through the graph; no act-directly decision point |
 | 4 | Governance (DRC + breaker) | done | `validateGraph` does cycle-legality (Tarjan SCC + escape), reachability, size caps; `applyValidatedDelta` validates-then-commits/rolls-back with an `invalid_mutation` event; global circuit-breaker in `executor.ts` caps cost + graph size and emits `unhandled_failure` |
-| 5 | Ground-plane context store | absent | Only immediate predecessor outputs injected; no shared spec/decisions doc |
+| 5 | Ground-plane context store | done | `ground_plane` table + `set_ground_plane` L3 tool; executor injects the effective (global + project) set into every agent action at run time (`action-runner.ts` `buildGroundPlanePrompt`) as the shared context channel |
 | 6 | Computed-goto routing | absent | `EdgeCondition` is a fixed 7-value enum (`schema.ts:5-12`) |
 
 ## Governance (P4, done)
