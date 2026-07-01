@@ -167,9 +167,13 @@ The full loop runs and is trustworthy. What the first real runs taught us:
 - **Objective vs. subjective.** Per-capability present/functional/robust is **stable**
   across judge runs; `quality`/`overall_verdict` are **noisy** (they track how hard the
   judge probed). Grade on the stable axes; **run a panel** for the fuzzy ones.
-- **Daemon robustness.** On a 4 GB host the orca server OOM-died mid-build (server +
-  build agent + bun processes at once). The build artifact survived but the circuit
-  state was lost — the daemon must survive/restart under its own build load.
+- **Daemon robustness (resolved).** On the original 4 GB host the orca server OOM-died
+  mid-build (server + build agent + bun processes at once), losing the circuit state.
+  Fixed: the build host is now **8 GB / 4 vCPU** and the server runs under a **systemd
+  unit with `Restart=always`** (`orca-server.service` → `srv.sh`; verified `kill -9`
+  recovers in ~2 s), so a crash no longer loses the build. Eval runs that need a fresh
+  db now `systemctl stop/start orca-server` (with `rm ~/.orca/orca.db*` between) instead
+  of the old tmux dance.
 
 ## Cross-cutting
 
